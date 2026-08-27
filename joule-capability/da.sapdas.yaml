@@ -1,0 +1,8 @@
+schema_version: 1.4.0
+name: finance_ai_chatbot_a2a
+capabilities:
+  # The current CLI schema allows ONLY `type` and `folder` here.
+  # Do NOT add `name`, `namespace`, or `version` — older examples show them,
+  # but the deploy compiler rejects them.
+  - type: local
+    folder: ./

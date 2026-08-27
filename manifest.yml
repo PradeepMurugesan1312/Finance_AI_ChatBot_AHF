@@ -1,0 +1,43 @@
+---
+applications:
+  - name: finance-ai-chatbot
+    memory: 512M
+    disk_quota: 1G
+    instances: 1
+    buildpacks:
+      - python_buildpack
+    # Route domain confirmed via `cf domains` on this org (us10-001 landscape).
+    routes:
+      - route: finance-ai-chatbot.cfapps.us10-001.hana.ondemand.com
+    command: python -m ahf_finance_agent
+    health-check-type: http
+    health-check-http-endpoint: /health
+    env:
+      APP_ENV: dev            # switch to "prod" once IAS App2App trust is in place
+      LOG_LEVEL: INFO
+      # Do NOT set PORT here — Cloud Foundry injects it per instance.
+
+      # --- step 2: SAP Generative AI Hub / AI Core (GPT 5.2) ---------------
+      MODEL_NAME: gpt-5.2
+      LLM_DEPLOYMENT_ID: dcc9a836b894dc1d
+      AICORE_RESOURCE_GROUP: default
+      AICORE_DESTINATION_NAME: GENAICORE
+      AICORE_API_VERSION: "2023-05-15"
+      LLM_MAX_COMPLETION_TOKENS: "4096"
+      LLM_TIMEOUT_SECONDS: "45"
+
+      # --- step 3: S/4HANA (read-only OData) ------------------------------
+      S4HANA_DESTINATION_NAME: S43
+      S4HANA_TIMEOUT_SECONDS: "20"
+
+      # --- step 5 / 7: task persistence (threads survive `cf push`) --------
+      TASK_STORE_PATH: /home/vcap/app/data/tasks.db
+
+    # `destination-service` is REQUIRED from step 2 on (resolves GENAICORE and
+    # S43). `connectivity` is only needed if S43 is a ProxyType=OnPremise
+    # destination (Cloud Connector). Create the instances, then uncomment:
+    #   cf create-service destination   lite   destination-service
+    #   cf create-service connectivity  lite   connectivity
+    # services:
+    #   - destination-service
+    #   - connectivity

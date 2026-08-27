@@ -1,0 +1,6 @@
+# Conversation state threaded across turns. The agent's A2A Task carries these;
+# the scenario reads them in and writes them back after each turn so a Joule
+# follow-up question continues the same A2A task/context.
+variables:
+  - name: contextId
+  - name: taskId

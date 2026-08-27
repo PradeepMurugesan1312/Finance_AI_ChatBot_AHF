@@ -1,0 +1,42 @@
+parameters:
+  - name: contextId
+    optional: true
+  - name: taskId
+    optional: true
+
+action_groups:
+  - actions:
+      # Cosmetic-looking, but present in every working reference capability —
+      # do not remove.
+      - type: status-update
+        message: <? "Checking AHF finance systems and policy documents..." ?>
+
+      - type: agent-request
+        agent_type: remote
+        system_alias: FinanceChatBotAgent
+        # First turn: send null. Continuation turns: pass the prior
+        # contextId/taskId back as JSON so the agent resumes the same A2A task.
+        body: >
+          <? (contextId == null || contextId.isEmpty()) && (taskId == null || taskId.isEmpty())
+             ? null
+             : '{"contextId": "' + contextId + '", "taskId": "' + taskId + '"}' ?>
+        result_variable: result
+
+      - type: set-variables
+        variables:
+          - name: contextId
+            value: <? result.body.contextId ?>
+          - name: taskId
+            value: <? result.body.id ?>
+
+      # The agent writes the answer to status.message.parts[0].text (Joule's
+      # BYOA default read path). It does NOT read artifacts.
+      - type: message
+        message:
+          type: text
+          content: "<? result.body.status.message.parts[0].text ?>"
+          markdown: true
+
+result:
+  contextId: "<? contextId ?>"
+  taskId: "<? taskId ?>"

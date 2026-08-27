@@ -1,0 +1,28 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+
+# Secrets / local config
+.env
+*.servicekey.json
+
+# Local data
+data/
+knowledge_base/index.json
+
+# Reference material pulled from the sibling agent (not part of this repo)
+droplet*/
+*.droplet
+*.tgz
+scratchpad/
+
+# Joule CLI compiled capability artifact (produced by `joule deploy --compile`)
+*.daar

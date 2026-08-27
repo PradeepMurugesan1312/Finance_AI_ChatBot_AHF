@@ -1,0 +1,48 @@
+[project]
+name = "ahf-finance-agent"
+version = "0.1.0"
+description = "AHF Finance AI ChatBot — read-only A2A agent for AP / procurement / finance FAQs, grounded in company documents, escalates to a human when not confident."
+readme = "README.md"
+requires-python = ">=3.13"
+dependencies = [
+    # A2A protocol server. Pinned to the exact version proven end-to-end in
+    # this Joule tenant by the sibling agent (ap_inquiry_agent). Do not bump
+    # without re-testing the full Joule round trip.
+    "a2a-sdk[http-server]==0.3.26",
+    "httpx>=0.27.0",
+    # SAP AI Core GPT deployments expose an OpenAI-compatible inference API.
+    # We call it with the openai SDK directly (not generative-ai-hub-sdk, which
+    # pins an older pydantic that conflicts with a2a-sdk).
+    "openai>=1.40.0",
+    "pydantic>=2.11.3",
+    "pydantic-settings>=2.4.0",
+    "sse-starlette>=3.4.8",
+    "starlette>=1.6.0",
+    "uvicorn>=0.30.0",
+]
+
+[project.optional-dependencies]
+# Populated in later build steps:
+#   step 3 (S/4HANA tool orchestration): langgraph, langchain-core, langchain-openai
+#   step 4 (RAG / HANA vector store): hdbcli, langchain-hana
+
+[project.scripts]
+ahf-finance-agent = "ahf_finance_agent:main"
+
+[dependency-groups]
+dev = [
+    "pytest>=8.0.0",
+    "pyyaml>=6.0",
+]
+
+[build-system]
+requires = ["uv_build>=0.12.5,<0.13.0"]
+build-backend = "uv_build"
+
+[tool.uv.build-backend]
+module-name = "ahf_finance_agent"
+module-root = "src"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]

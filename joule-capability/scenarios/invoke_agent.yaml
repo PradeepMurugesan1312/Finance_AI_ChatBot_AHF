@@ -1,0 +1,26 @@
+description: >
+  Call this when an AHF employee or vendor asks about the status of a supplier
+  invoice, payment, purchase order, or purchase requisition in SAP S/4HANA;
+  wants to see recent invoices for a vendor; asks whether a vendor is set up /
+  onboarded; or asks an accounts-payable, procurement, or finance policy /
+  process question (T&E rules, PO or PR approval thresholds, vendor onboarding
+  steps, invoice payment terms, three-way-match tolerances). For example:
+  "What's the status of invoice 5105601234 for fiscal year 2026?",
+  "Has PO 4500001234 been approved?", "Is vendor 100000 set up?",
+  "What's the approval threshold for a purchase order?",
+  "How many days do I have to submit an expense report?"
+
+target:
+  type: function
+  name: call_agent
+  parameters:
+    - name: contextId
+      value: $capability_context.contextId
+    - name: taskId
+      value: $capability_context.taskId
+
+capability_context:
+  - name: contextId
+    value: $target_result.contextId
+  - name: taskId
+    value: $target_result.taskId
