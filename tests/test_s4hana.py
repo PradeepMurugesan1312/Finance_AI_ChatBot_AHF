@@ -182,6 +182,17 @@ def test_invoice_status_none_when_filter_returns_nothing(fake_s4):
     assert S4HANAClient(_settings()).get_invoice_status("5105601234", "2026") is None
 
 
+def test_invoice_status_by_number_only_does_not_filter_on_fiscal_year(fake_s4):
+    fake_s4.routes["/A_SupplierInvoice"] = {
+        "json": _d([{"SupplierInvoice": "5100000017", "FiscalYear": "2017"}])
+    }
+    rec = S4HANAClient(_settings()).get_invoice_status("5100000017")
+    params = fake_s4.requests[-1]["params"]
+    assert params["$filter"] == "SupplierInvoice eq '5100000017'"
+    assert params["$orderby"] == "PostingDate desc"
+    assert rec["FiscalYear"] == "2017"
+
+
 def test_select_drops_release_specific_field_and_retries(fake_s4):
     # Gateway 404s the whole request when $select names an unknown field.
     fake_s4.routes["/A_PurchaseOrder("] = {

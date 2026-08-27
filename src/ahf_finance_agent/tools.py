@@ -59,7 +59,7 @@ def _records(rows: list[dict]) -> ToolOutcome:
 # Each maps validated tool arguments onto an S4HANAClient method.
 
 def _get_invoice_status(c: S4HANAClient, a: dict) -> ToolOutcome:
-    return _record(c.get_invoice_status(_req(a, "invoice"), _req(a, "fiscal_year")))
+    return _record(c.get_invoice_status(_req(a, "invoice"), a.get("fiscal_year") or None))
 
 
 def _search_invoices_by_vendor(c: S4HANAClient, a: dict) -> ToolOutcome:
@@ -115,14 +115,19 @@ def _fn(name: str, description: str, properties: dict, required: list[str]) -> d
 TOOL_SPECS: list[dict] = [
     _fn(
         "get_invoice_status",
-        "Look up the status and header of one specific SAP S/4HANA supplier invoice "
-        "by invoice number and fiscal year (payment terms, blocking reason, linked "
-        "accounting document). Use for 'is invoice X paid / blocked / posted'.",
+        "Look up the status and header of a SAP S/4HANA supplier invoice by its "
+        "invoice number (payment terms, blocking reason, posting date, amount). "
+        "The invoice number is unique on its own — call this with just the number "
+        "and do NOT ask the user for a fiscal year. Use for 'is invoice X paid / "
+        "blocked / posted'.",
         {
             "invoice": {"type": "string", "description": "Supplier invoice number, e.g. 5105601234"},
-            "fiscal_year": {"type": "string", "description": "4-digit fiscal year, e.g. 2026"},
+            "fiscal_year": {
+                "type": "string",
+                "description": "Optional 4-digit fiscal year; only pass it if the user volunteered one.",
+            },
         },
-        ["invoice", "fiscal_year"],
+        ["invoice"],
     ),
     _fn(
         "search_invoices_by_vendor",

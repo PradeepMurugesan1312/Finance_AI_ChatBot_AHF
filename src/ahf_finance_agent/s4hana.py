@@ -328,16 +328,28 @@ class S4HANAClient:
         return [_clean(r) for r in _rows(self._select_get(f"/{srv}/{entity_set}", select, params))]
 
     # -- lookups ----------------------------------------------------
-    def get_invoice_status(self, invoice: str, fiscal_year: str) -> dict | None:
-        # Addressed with $filter, not a read-by-key
-        # A_SupplierInvoice(SupplierInvoice='..',FiscalYear='..'): several
-        # on-premise Gateway builds of this service 404 the composite-key GET
-        # while the collection query returns the row fine.
+    def get_invoice_status(self, invoice: str, fiscal_year: str | None = None) -> dict | None:
+        """Look up a supplier invoice by its number. The number is unique on its
+        own, so ``fiscal_year`` is optional — pass it only to disambiguate the
+        rare case of a reused number across years.
+
+        Uses ``$filter`` rather than a read-by-key
+        ``A_SupplierInvoice(SupplierInvoice='..',FiscalYear='..')``: several
+        on-premise Gateway builds 404 the composite-key GET while the collection
+        query returns the row fine, and the key form needs a fiscal year anyway.
+        """
+        filt = f"SupplierInvoice eq {_lit(invoice)}"
+        if fiscal_year:
+            filt += f" and FiscalYear eq {_lit(fiscal_year)}"
         rows = self._query(
             _INVOICE_SRV, _INVOICE_SET, select=_INVOICE_SELECT,
-            filt=f"SupplierInvoice eq {_lit(invoice)} and FiscalYear eq {_lit(fiscal_year)}",
-            top=1,
+            filt=filt, top=5, orderby="PostingDate desc",
         )
+        if len(rows) > 1:
+            logger.warning(
+                "invoice %s matched %d rows across fiscal years; returning the most recent",
+                invoice, len(rows),
+            )
         return rows[0] if rows else None
 
     def search_invoices_by_vendor(

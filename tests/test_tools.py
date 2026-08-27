@@ -55,10 +55,19 @@ def test_search_returns_count_and_records():
 
 def test_missing_required_argument_is_reported_not_raised():
     s4 = FakeS4HANAClient()
-    outcome = dispatch_tool("get_invoice_status", '{"invoice": "5105601234"}', s4)  # no fiscal_year
+    outcome = dispatch_tool("get_invoice_status", '{"fiscal_year": "2026"}', s4)  # no invoice
     assert outcome.grounded is False
-    assert "fiscal_year" in outcome.content["error"]
+    assert "invoice" in outcome.content["error"]
     assert s4.calls == []  # never reached the client
+
+
+def test_invoice_status_does_not_require_fiscal_year():
+    s4 = FakeS4HANAClient(get_invoice_status={"SupplierInvoice": "5105601234", "FiscalYear": "2017"})
+    outcome = dispatch_tool("get_invoice_status", '{"invoice": "5105601234"}', s4)
+    assert outcome.grounded is True
+    assert s4.calls == [("get_invoice_status", ("5105601234", None), {})]
+    spec = next(s for s in TOOL_SPECS if s["function"]["name"] == "get_invoice_status")
+    assert spec["function"]["parameters"]["required"] == ["invoice"]
 
 
 def test_blank_required_argument_counts_as_missing():
