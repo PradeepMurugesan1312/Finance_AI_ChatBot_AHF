@@ -9,11 +9,15 @@ __pycache__/
 tests/
 htmlcov/
 .coverage
-*.md
-docs/
 scratchpad/
 droplet*/
+*.tgz
+*.droplet
 .env
 joule-capability/
 scripts/
 *.daar
+
+# NOTE: do not exclude README.md — pyproject.toml's `readme = "README.md"` is
+# read by the build backend during `pip install .` at staging time, and a
+# missing file fails the whole deploy with a metadata-generation error.
