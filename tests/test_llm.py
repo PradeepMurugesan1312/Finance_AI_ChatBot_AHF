@@ -66,7 +66,7 @@ def test_builds_inference_url_without_doubling_v2(patched):
     GenAIHubClient(_settings()).chat([{"role": "user", "content": "hi"}])
     assert init_kwargs["base_url"] == "https://api.ai.example.com/v2/inference/deployments/dep-123"
     assert init_kwargs["api_key"] == "tok-abc"
-    assert init_kwargs["default_query"] == {"api-version": "2023-05-15"}
+    assert init_kwargs["default_query"] == {"api-version": "2024-10-21"}
     assert init_kwargs["default_headers"]["AI-Resource-Group"] == "default"
     assert "Authorization" not in init_kwargs["default_headers"]
 
@@ -76,6 +76,35 @@ def test_sends_max_completion_tokens_not_max_tokens(patched):
     GenAIHubClient(_settings(llm_max_completion_tokens=222)).chat([{"role": "user", "content": "hi"}])
     assert capture["max_completion_tokens"] == 222
     assert "max_tokens" not in capture
+
+
+def test_forwards_tools_and_defaults_tool_choice_to_auto(patched):
+    capture, _, _ = patched
+    tools = [{"type": "function", "function": {"name": "get_invoice_status", "parameters": {}}}]
+    GenAIHubClient(_settings()).chat([{"role": "user", "content": "hi"}], tools=tools)
+    assert capture["tools"] == tools
+    assert capture["tool_choice"] == "auto"
+
+
+def test_no_tools_key_when_tools_not_given(patched):
+    capture, _, _ = patched
+    GenAIHubClient(_settings()).chat([{"role": "user", "content": "hi"}])
+    assert "tools" not in capture and "tool_choice" not in capture
+
+
+def test_parses_tool_calls_and_builds_assistant_message(patched):
+    _, _, state = patched
+    fn = type("F", (), {"name": "get_invoice_status", "arguments": '{"invoice": "1"}'})()
+    tc = type("TC", (), {"id": "call-1", "function": fn})()
+    msg = type("M", (), {"content": None, "tool_calls": [tc]})()
+    choice = type("Ch", (), {"message": msg, "finish_reason": "tool_calls"})()
+    state["response"] = type("R", (), {"choices": [choice], "usage": None, "model": "gpt-5.2"})()
+
+    result = GenAIHubClient(_settings()).chat([{"role": "user", "content": "status of invoice 1?"}])
+    assert result.text == ""  # no LLMError despite empty content — there are tool calls
+    assert [(c.name, c.raw_arguments) for c in result.tool_calls] == [("get_invoice_status", '{"invoice": "1"}')]
+    assert result.assistant_message["tool_calls"][0]["function"]["name"] == "get_invoice_status"
+    assert result.assistant_message["role"] == "assistant"
 
 
 def test_returns_text_and_usage(patched):

@@ -2,9 +2,9 @@ schema_version: 3.28.0
 
 metadata:
   namespace: joule.ext
-  name: finance_ai_chatbot_a2a
+  name: joule_ai_chatbot_finance
   version: 1.0.0
-  display_name: "AHF Finance ChatBot"
+  display_name: "Joule-Ai-Chatbot-Finance"
   description: >
     Answers routine AHF finance questions — supplier invoice / payment / PO /
     purchase-requisition status and vendor onboarding status from SAP S/4HANA

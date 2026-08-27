@@ -9,6 +9,7 @@ def test_defaults_match_this_tenant():
     s = Settings(_env_file=None)  # type: ignore[call-arg]
     assert s.aicore_destination_name == "GENAICORE"
     assert s.s4hana_destination_name == "S43"
+    assert s.s4hana_max_tool_iterations == 4
     assert s.model_name == "gpt-5.2"
     assert s.log_message_text is False  # PII-safe default
 

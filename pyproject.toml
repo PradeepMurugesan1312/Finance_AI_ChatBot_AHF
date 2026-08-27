@@ -22,8 +22,10 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+# step 3 (S/4HANA tool orchestration) is a hand-rolled tool-calling loop on the
+# openai SDK (see ahf_finance_agent/answering.py) — no langgraph/langchain, to
+# keep the dependency surface small and the loop fully unit-testable offline.
 # Populated in later build steps:
-#   step 3 (S/4HANA tool orchestration): langgraph, langchain-core, langchain-openai
 #   step 4 (RAG / HANA vector store): hdbcli, langchain-hana
 
 [project.scripts]

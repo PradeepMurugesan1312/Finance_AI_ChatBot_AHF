@@ -54,8 +54,10 @@ class Settings(BaseSettings):
     aicore_resource_group: str = "default"
     aicore_destination_name: str = "GENAICORE"
     # AI Core GPT deployments proxy to Azure OpenAI, which requires an
-    # api-version query param on every request.
-    aicore_api_version: str = "2023-05-15"
+    # api-version query param on every request. Must be >= 2023-12-01-preview
+    # for tool/function calling (see llm.py) — older values 400 with
+    # "Unrecognized request argument: tools".
+    aicore_api_version: str = "2024-10-21"
     # GPT 5.2 is a reasoning-tier model: it rejects the legacy `max_tokens`
     # chat param — the openai client sends `max_completion_tokens`.
     llm_max_completion_tokens: int = 4096
@@ -65,7 +67,15 @@ class Settings(BaseSettings):
 
     # --- S/4HANA connectivity (step 3) ----------------------------------
     s4hana_destination_name: str = "S43"
+    # OData service root, prepended to every service path. Keeps the S43
+    # destination URL as the bare host:port (e.g. http://host:50000) — the
+    # standard SAP Gateway root is /sap/opu/odata/sap. Set
+    # S4HANA_ODATA_BASE_PATH="" if the destination URL already carries it.
+    s4hana_odata_base_path: str = "/sap/opu/odata/sap"
     s4hana_timeout_seconds: float = 20.0
+    # Max GPT 5.2 <-> S/4HANA tool round trips before we force a final answer.
+    # 4 covers "look up A, then look up B it referenced" without runaway loops.
+    s4hana_max_tool_iterations: int = 4
 
     # --- Local dev credentials (never set in CF; services are bound there) --
     destination_service_key: str | None = None

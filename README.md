@@ -41,7 +41,7 @@ User prompt in SAP Joule
 |---|---|---|
 | 1 | A2A server scaffold: structure, deps, health check, agent card, task lifecycle, sync request handling | ✅ done |
 | 2 | GPT 5.2 via SAP Generative AI Hub (`GENAICORE` destination) | ✅ code done — live call needs a bound `destination` service / `DESTINATION_SERVICE_KEY` |
-| 3 | S/4HANA read-only tools (5 OData services) | ⬜ |
+| 3 | S/4HANA read-only tools (5 OData services) | ✅ code done — GPT 5.2 tool-calling loop over `S43`; live call needs the bound `destination` service. Smoke: `GET /diag/s4` |
 | 4 | RAG pipeline + HANA Cloud vector store | ⬜ |
 | 5 | Async webhook path (60s A2A ceiling) | partial — `pushNotifications` wired |
 | 6 | Escalation confidence bar | ⬜ |
@@ -50,20 +50,24 @@ User prompt in SAP Joule
 | 9 | Observability | partial — per-turn interaction records emitted |
 | 10 | Tests | ongoing |
 
-Until step 4 lands, the agent replies plainly that it is not yet grounded on
-policy documents and offers escalation — a deliberate interim behaviour.
+Since step 3, the agent answers specific invoice / payment / PO / PR / vendor
+questions from live read-only S/4HANA lookups. Until step 4 lands it still
+replies plainly that it is not yet grounded on **policy** documents and offers
+escalation — a deliberate interim behaviour.
 
 ## Project layout
 
 ```
 src/ahf_finance_agent/
 ├── __main__.py         # server entry point (uvicorn + Starlette); `python -m ahf_finance_agent`
-├── server.py           # build_app(): A2A Starlette app + /health + /ready + /diag/llm
+├── server.py           # build_app(): A2A Starlette app + /health + /ready + /diag/llm + /diag/s4
 ├── agent_card.py       # Agent Card — what Joule discovers at /.well-known/agent.json
 ├── agent_executor.py   # A2A protocol bridge + task lifecycle
-├── answering.py        # AnswerGenerator: question → GPT 5.2 → scrubbed answer + metadata
-├── llm.py              # GenAIHubClient: GPT 5.2 via GENAICORE (openai SDK, max_completion_tokens)
-├── prompts.py          # staged system prompt (interim: not grounded yet)
+├── answering.py        # AnswerGenerator: question → GPT 5.2 (+ S/4HANA tool loop) → scrubbed answer
+├── llm.py              # GenAIHubClient: GPT 5.2 via GENAICORE (openai SDK, tool calling)
+├── s4hana.py           # S4HANAClient: read-only OData v2 GETs via the S43 destination
+├── tools.py            # OpenAI tool schemas + dispatch for the 6 S/4HANA lookups
+├── prompts.py          # staged system prompt (step 3: tools live, policy KB not yet)
 ├── guardrails.py       # scrub_response() / strip_sensitive_keys() — no PII / bank data out
 ├── btp/destinations.py # BTP destination resolution (+ CSRF-fallback, on-prem proxy)
 ├── task_store.py       # SQLite-backed A2A task store (threads survive `cf push`)
@@ -92,6 +96,10 @@ curl -s localhost:8080/.well-known/agent.json | jq .
 # Health / readiness
 curl -s localhost:8080/health
 curl -s localhost:8080/ready | jq .
+
+# Downstream smoke tests (non-prod only): resolve the destination + one live call
+curl -s localhost:8080/diag/llm | jq .
+curl -s localhost:8080/diag/s4  | jq .   # one-row OData GET against S43, no business data
 
 # A2A message/send round trip
 curl -s localhost:8080/ -H 'content-type: application/json' -d '{

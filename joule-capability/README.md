@@ -1,4 +1,7 @@
-# Joule Capability — AHF Finance ChatBot
+# Joule Capability — Joule-Ai-Chatbot-Finance (AHF Finance ChatBot)
+
+Technical name: `joule.ext/joule_ai_chatbot_finance` (renamed from
+`finance_ai_chatbot_a2a`, which collided with an existing capability).
 
 Connects SAP Joule to the deployed A2A agent as a "bring your own agent" (BYOA)
 capability. **This is build step 8** — the files here are ready, but deploying
@@ -55,7 +58,7 @@ bash ../scripts/create-destination.sh \
 # 2. deploy the capability
 npm install -g @sap/joule-studio-cli
 joule login
-joule deploy ./da.sapdas.yaml --compile -n "finance_ai_chatbot_a2a"
+joule deploy ./da.sapdas.yaml --compile -n "joule_ai_chatbot_finance"
 ```
 
 Then in Joule: *"What's the status of invoice 5105601234 for fiscal year 2026?"*

@@ -3,11 +3,11 @@
 This is the seam between the A2A server (task lifecycle, event queue) and the
 agent's actual reasoning.
 
-Build step 2: :meth:`execute` generates the answer with GPT 5.2 via
-:class:`ahf_finance_agent.answering.AnswerGenerator`. There are still no
-S/4HANA tools and no policy knowledge base, so the system prompt keeps the
-model from guessing at specific transactions or policies and steers those to a
-human (steps 3 and 4). If the model is unreachable the generator returns a
+Build step 3: :meth:`execute` generates the answer with GPT 5.2 via
+:class:`ahf_finance_agent.answering.AnswerGenerator`, which now runs read-only
+S/4HANA lookups as tools. There is still no policy knowledge base (step 4), so
+the system prompt keeps the model from answering policy questions from general
+knowledge. If the model is unreachable the generator returns a
 degraded-but-honest fallback rather than raising, so a turn is always answered.
 
 Two lifecycle decisions are load-bearing and were proven the hard way by the
@@ -103,6 +103,7 @@ class FinanceChatBotExecutor(AgentExecutor):
 
             rec.status = "answered"
             rec.grounded = answer.grounded
+            rec.tools = answer.tools
             rec.escalated = answer.escalated or answer.degraded
             rec.redactions = answer.redactions
             rec.answer_chars = len(answer.text)

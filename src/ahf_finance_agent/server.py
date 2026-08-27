@@ -87,6 +87,7 @@ async def _ready(_: Request) -> JSONResponse:
             "dependencies": {
                 "llm_configured": settings.llm_deployment_id is not None,
                 "llm_destination": settings.aicore_destination_name,
+                "s4hana_destination": settings.s4hana_destination_name,
                 "kb_backend": settings.kb_backend,
                 "task_store": "sqlite" if settings.task_store_path else "in-memory",
             },
@@ -127,6 +128,27 @@ async def _diag_llm(_: Request) -> JSONResponse:
     )
 
 
+async def _diag_s4(_: Request) -> JSONResponse:
+    """Non-prod smoke test: resolve S43 and do a one-row OData GET.
+
+    Proves the destination resolves and the agent's credentials are accepted by
+    S/4HANA, without returning any business data. Disabled when APP_ENV is
+    production.
+    """
+    import asyncio
+
+    from ahf_finance_agent.s4hana import S4HANAError, get_s4hana_client
+
+    settings = get_settings()
+    if settings.is_production:
+        return JSONResponse({"error": "disabled in production"}, status_code=403)
+    try:
+        result = await asyncio.to_thread(get_s4hana_client().ping)
+    except S4HANAError as exc:
+        return JSONResponse({"ok": False, "error": str(exc)}, status_code=502)
+    return JSONResponse({"ok": True, "destination": settings.s4hana_destination_name, **result})
+
+
 def build_app(settings: Settings | None = None, *, executor: AgentExecutor | None = None) -> Starlette:
     settings = settings or get_settings()
     public_url = resolve_public_url(settings)
@@ -140,4 +162,5 @@ def build_app(settings: Settings | None = None, *, executor: AgentExecutor | Non
     app.add_route("/health", _health, methods=["GET"])
     app.add_route("/ready", _ready, methods=["GET"])
     app.add_route("/diag/llm", _diag_llm, methods=["GET"])
+    app.add_route("/diag/s4", _diag_s4, methods=["GET"])
     return app

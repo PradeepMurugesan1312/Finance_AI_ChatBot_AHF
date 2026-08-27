@@ -21,7 +21,7 @@ from __future__ import annotations
 
 import logging
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 import openai
 
@@ -37,6 +37,13 @@ class LLMError(RuntimeError):
 
 
 @dataclass
+class ToolCall:
+    id: str
+    name: str
+    raw_arguments: str  # JSON string exactly as the model emitted it
+
+
+@dataclass
 class ChatResult:
     text: str
     finish_reason: str | None
@@ -44,6 +51,10 @@ class ChatResult:
     prompt_tokens: int | None
     completion_tokens: int | None
     latency_ms: int
+    tool_calls: list[ToolCall] = field(default_factory=list)
+    # The assistant turn to append back to `messages` before the tool results,
+    # in the shape the OpenAI chat API expects. None when there are no tool calls.
+    assistant_message: dict | None = None
 
 
 class GenAIHubClient:
@@ -83,19 +94,28 @@ class GenAIHubClient:
     # -- inference ------------------------------------------------------
     def chat(
         self,
-        messages: list[dict[str, str]],
+        messages: list[dict],
         *,
+        tools: list[dict] | None = None,
+        tool_choice: str | None = None,
         max_completion_tokens: int | None = None,
     ) -> ChatResult:
         s = self._settings
         client, deployment_id = self._build_client()
+        # NOTE: tool calling needs an AI Core / Azure OpenAI api-version of at
+        # least 2023-12-01-preview. Bump AICORE_API_VERSION if a tools request
+        # 400s with "Unrecognized request argument: tools".
+        kwargs: dict = {
+            "model": s.model_name,
+            "messages": messages,
+            "max_completion_tokens": max_completion_tokens or s.llm_max_completion_tokens,
+        }
+        if tools:
+            kwargs["tools"] = tools
+            kwargs["tool_choice"] = tool_choice or "auto"
         start = time.monotonic()
         try:
-            resp = client.chat.completions.create(
-                model=s.model_name,
-                messages=messages,  # type: ignore[arg-type]
-                max_completion_tokens=max_completion_tokens or s.llm_max_completion_tokens,
-            )
+            resp = client.chat.completions.create(**kwargs)
         except openai.APIStatusError as exc:
             body = getattr(exc, "message", str(exc))
             logger.error(
@@ -109,17 +129,42 @@ class GenAIHubClient:
 
         latency_ms = int((time.monotonic() - start) * 1000)
         choice = resp.choices[0] if resp.choices else None
-        text = (choice.message.content if choice and choice.message else "") or ""
+        message = choice.message if choice else None
+        text = (message.content if message else "") or ""
         finish = choice.finish_reason if choice else None
         usage = resp.usage
+
+        tool_calls: list[ToolCall] = []
+        for raw in (getattr(message, "tool_calls", None) or []):
+            fn = getattr(raw, "function", None)
+            if fn is None:
+                continue
+            tool_calls.append(ToolCall(id=raw.id, name=fn.name, raw_arguments=fn.arguments or "{}"))
+
         if finish == "length":
             logger.warning(
                 "AI Core response truncated (finish_reason=length); consider raising "
                 "LLM_MAX_COMPLETION_TOKENS (currently %s).",
                 max_completion_tokens or s.llm_max_completion_tokens,
             )
-        if not text.strip():
+        # A turn with tool calls legitimately has no text yet.
+        if not text.strip() and not tool_calls:
             raise LLMError(f"AI Core returned an empty completion (finish_reason={finish!r}).")
+
+        assistant_message: dict | None = None
+        if tool_calls:
+            assistant_message = {
+                "role": "assistant",
+                "content": message.content or None,
+                "tool_calls": [
+                    {
+                        "id": tc.id,
+                        "type": "function",
+                        "function": {"name": tc.name, "arguments": tc.raw_arguments},
+                    }
+                    for tc in tool_calls
+                ],
+            }
 
         return ChatResult(
             text=text.strip(),
@@ -128,6 +173,8 @@ class GenAIHubClient:
             prompt_tokens=getattr(usage, "prompt_tokens", None) if usage else None,
             completion_tokens=getattr(usage, "completion_tokens", None) if usage else None,
             latency_ms=latency_ms,
+            tool_calls=tool_calls,
+            assistant_message=assistant_message,
         )
 
 
