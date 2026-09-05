@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from ahf_finance_agent.knowledge_base import Retrieved
 from ahf_finance_agent.llm import ChatResult, ToolCall
 
 
@@ -68,6 +69,29 @@ class FakeGenAIHubClient:
         return text_result(self.reply)
 
 
+def retrieved(title: str, section: str, text: str, *, source: str = "sample.md", score: float = 0.7) -> Retrieved:
+    return Retrieved(text=text, source=source, title=title, section=section, score=score)
+
+
+class FakeVectorIndex:
+    """Stand-in for knowledge_base.VectorIndex — canned (hits, grounded)."""
+
+    def __init__(self, hits: list[Retrieved] | None = None, grounded: bool = False, *, raise_exc: Exception | None = None):
+        self._hits = hits or []
+        self._grounded = grounded
+        self._raise_exc = raise_exc
+        self.queries: list[str] = []
+
+    def retrieve(self, query: str, k=None, min_score=None):
+        self.queries.append(query)
+        if self._raise_exc is not None:
+            raise self._raise_exc
+        return self._hits, self._grounded
+
+    def chunk_count(self) -> int:
+        return len(self._hits)
+
+
 class FakeS4HANAClient:
     """Stand-in for S4HANAClient — canned return per method name."""
 
@@ -92,11 +116,41 @@ class FakeS4HANAClient:
     def get_payment_clearing_status(self, *a, **k):
         return self._canned("get_payment_clearing_status", *a, **k)
 
+    def get_invoice_payment_status(self, *a, **k):
+        return self._canned("get_invoice_payment_status", *a, **k)
+
     def get_purchase_order_status(self, *a, **k):
         return self._canned("get_purchase_order_status", *a, **k)
+
+    def get_purchase_order_approval_status(self, *a, **k):
+        return self._canned("get_purchase_order_approval_status", *a, **k)
+
+    def get_goods_receipts_for_po(self, *a, **k):
+        return self._canned("get_goods_receipts_for_po", *a, **k)
+
+    def get_invoice_items(self, *a, **k):
+        return self._canned("get_invoice_items", *a, **k) or []
+
+    def get_purchase_order_items(self, *a, **k):
+        return self._canned("get_purchase_order_items", *a, **k) or []
+
+    def get_purchase_order_delivery_schedule(self, *a, **k):
+        return self._canned("get_purchase_order_delivery_schedule", *a, **k)
+
+    def check_three_way_match(self, *a, **k):
+        return self._canned("check_three_way_match", *a, **k)
 
     def get_purchase_requisition_status(self, *a, **k):
         return self._canned("get_purchase_requisition_status", *a, **k)
 
     def get_vendor_details(self, *a, **k):
         return self._canned("get_vendor_details", *a, **k)
+
+    def get_vendor_email_addresses(self, *a, **k):
+        return self._canned("get_vendor_email_addresses", *a, **k)
+
+    def get_vendor_bank_accounts(self, *a, **k):
+        return self._canned("get_vendor_bank_accounts", *a, **k)
+
+    def get_budget_status(self, *a, **k):
+        return self._canned("get_budget_status", *a, **k) or {"budgetAvailable": False}

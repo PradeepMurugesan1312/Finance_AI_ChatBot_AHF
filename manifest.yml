@@ -35,6 +35,15 @@ applications:
       S4HANA_TIMEOUT_SECONDS: "20"
       S4HANA_MAX_TOOL_ITERATIONS: "4"
 
+      # --- step 4: RAG policy knowledge base ------------------------------
+      KB_BACKEND: local
+      # Rebuild the vector index from knowledge_base/docs/ on every boot, so a
+      # fresh `cf push` always ships a working KB (the index file is
+      # git-ignored). With the local fallback embedding this is ~30 chunks and
+      # sub-second. Set EMBEDDING_DEPLOYMENT_ID to embed via AI Core instead.
+      KB_REBUILD_ON_START: "true"
+      # EMBEDDING_DEPLOYMENT_ID: <text-embedding-3-small deployment id>
+
       # --- step 5 / 7: task persistence (threads survive `cf push`) --------
       TASK_STORE_PATH: /home/vcap/app/data/tasks.db
 

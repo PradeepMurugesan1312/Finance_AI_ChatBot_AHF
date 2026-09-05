@@ -33,10 +33,10 @@ def test_message_send_returns_task_with_answer_in_status_message(client, send_me
 
 
 def test_generated_answer_is_scrubbed_before_returning(client, send_message, fake_llm):
-    fake_llm.reply = "Wire it to IBAN DE89 3704 0044 0532 0130 00 today."
-    result = _result(send_message(client, "where do I send payment?"))
+    fake_llm.reply = "The SSN on file is 123-45-6789."
+    result = _result(send_message(client, "who owns this invoice?"))
     text = result["status"]["message"]["parts"][0]["text"]
-    assert "DE89" not in text
+    assert "123-45-6789" not in text
     assert "[redacted]" in text
 
 

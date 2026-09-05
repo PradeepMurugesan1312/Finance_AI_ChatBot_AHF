@@ -64,7 +64,13 @@ class GenAIHubClient:
     # -- construction -----------------------------------------------------
     def _build_client(self) -> tuple[openai.OpenAI, str]:
         s = self._settings
-        deployment_id = s.require_llm()
+        try:
+            deployment_id = s.require_llm()
+        except RuntimeError as exc:
+            # Misconfiguration (no LLM_DEPLOYMENT_ID) must degrade like any other
+            # LLM failure — the caller catches LLMError and still answers the
+            # turn, rather than the conversation 500-ing.
+            raise LLMError(str(exc)) from exc
         try:
             dest = resolve_destination(s.aicore_destination_name)
         except DestinationError as exc:

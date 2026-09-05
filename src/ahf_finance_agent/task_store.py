@@ -94,6 +94,30 @@ class SQLiteTaskStore(TaskStore):
         with self._connect() as conn:
             conn.execute("DELETE FROM tasks WHERE id = ?", (task_id,))
 
+    async def get_by_context(self, context_id: str, limit: int = 20) -> list[Task]:
+        """All tasks sharing a context_id, oldest first. Used to reconstruct a
+        conversation when the client threads only contextId (a fresh taskId per
+        turn) instead of continuing one task."""
+        if not context_id:
+            return []
+        async with self._lock:
+            rows = await asyncio.to_thread(self._get_by_context_sync, context_id, limit)
+        tasks: list[Task] = []
+        for row in rows:
+            try:
+                tasks.append(Task.model_validate_json(row))
+            except Exception:  # pragma: no cover - skip a corrupt row
+                logger.warning("Skipping corrupt task row for context %s", context_id)
+        return tasks
+
+    def _get_by_context_sync(self, context_id: str, limit: int) -> list[str]:
+        with self._connect() as conn:
+            cur = conn.execute(
+                "SELECT data FROM tasks WHERE context_id = ? ORDER BY updated_at ASC LIMIT ?",
+                (context_id, max(1, limit)),
+            )
+            return [r[0] for r in cur.fetchall()]
+
 
 def build_task_store() -> TaskStore:
     """Return a persistent store if ``TASK_STORE_PATH`` is set, else in-memory."""

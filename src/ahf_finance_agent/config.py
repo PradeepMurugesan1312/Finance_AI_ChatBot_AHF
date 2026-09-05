@@ -85,12 +85,24 @@ class Settings(BaseSettings):
     kb_backend: str = "local"  # "local" | "hana"
     kb_index_path: str = "knowledge_base/index.json"
     kb_docs_dir: str = "knowledge_base/docs"
+    # Tuned for the local fallback embedding (approximate). RAISE to ~0.75 once
+    # EMBEDDING_DEPLOYMENT_ID points at a real embedding model. The lexical
+    # overlap guard in knowledge_base.retrieve() still rejects off-topic hits.
     kb_min_score: float = 0.20
     kb_top_k: int = 4
+    # Rebuild the vector index from kb_docs_dir at server startup. Always
+    # rebuilt when the index file is missing; set this to force a rebuild even
+    # when it exists (e.g. after enabling EMBEDDING_DEPLOYMENT_ID on deploy).
+    kb_rebuild_on_start: bool = False
+    # Max characters of a retrieved passage handed back to the model per hit.
+    kb_snippet_chars: int = 700
 
     # --- A2A task persistence (step 5 / step 7) ----------------------
     task_store_path: str | None = None
     emit_working_event: bool = False
+    # How many prior conversation messages (user + agent) to replay into the
+    # model on a follow-up turn, so it answers in context. Newest kept.
+    chat_history_max_messages: int = 10
 
     # --- Observability (step 9) --------------------------------------
     interaction_log_path: str | None = None

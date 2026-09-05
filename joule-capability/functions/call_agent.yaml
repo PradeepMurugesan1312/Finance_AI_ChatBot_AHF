@@ -11,21 +11,20 @@ action_groups:
       - type: status-update
         message: <? "Checking AHF finance systems and policy documents..." ?>
 
-      # NOTE: the `body:` field (A2A task/context threading) was removed while
-      # bringing the round trip up — a null-returning expression on the first
-      # turn was failing the whole dialog function in ~0.5s (JCore-4004,
-      # "Dialog function execution failed", before any request reached the
-      # agent). Without `body`, every Joule turn opens a fresh A2A task; the
-      # agent is stateless per turn so answers are still correct, only
-      # cross-turn context ("what about payment?") is lost. Re-add once green:
-      #   body: >
-      #     <? contextId == null && taskId == null
-      #        ? null
-      #        : '{"contextId": "' + contextId + '", "taskId": "' + taskId + '"}' ?>
+      # A2A task/context threading. The earlier version returned `null` on the
+      # first turn (before contextId/taskId exist), which failed the whole
+      # dialog function in ~0.5s (JCore-4004). Fixed: emit an empty JSON object
+      # '{}' on turn 1, the real ids on every turn after. This is what makes a
+      # Joule follow-up ("give me 10 more", "is it blocked?") continue the same
+      # A2A task so the agent has the prior turns.
       - type: agent-request
         agent_type: remote
         system_alias: FinanceChatBotAgent
         result_variable: result
+        body: >
+          <? contextId == null || taskId == null
+             ? '{}'
+             : '{"contextId":"' + contextId + '","taskId":"' + taskId + '"}' ?>
 
       - type: set-variables
         variables:

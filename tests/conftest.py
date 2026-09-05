@@ -7,6 +7,7 @@ from ahf_finance_agent.answering import AnswerGenerator
 from ahf_finance_agent.agent_executor import FinanceChatBotExecutor
 from ahf_finance_agent.btp import destinations as _destinations
 from ahf_finance_agent.config import Settings, get_settings
+from ahf_finance_agent.knowledge_base import reset_index_cache
 from ahf_finance_agent.s4hana import get_s4hana_client
 from ahf_finance_agent.server import build_app
 from tests.helpers import FakeGenAIHubClient
@@ -30,10 +31,12 @@ def _clear_caches():
     get_settings.cache_clear()
     get_s4hana_client.cache_clear()
     _destinations.clear_cache()
+    reset_index_cache()
     yield
     get_settings.cache_clear()
     get_s4hana_client.cache_clear()
     _destinations.clear_cache()
+    reset_index_cache()
 
 
 @pytest.fixture

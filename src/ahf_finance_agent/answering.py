@@ -27,9 +27,15 @@ from ahf_finance_agent.config import get_settings
 from ahf_finance_agent.escalation import HUMAN_QUEUE_HINT
 from ahf_finance_agent.guardrails import scrub_response
 from ahf_finance_agent.llm import GenAIHubClient, LLMError, get_genai_client
-from ahf_finance_agent.prompts import TOOLS_SYSTEM_PROMPT
+from ahf_finance_agent.prompts import RAG_SYSTEM_PROMPT
 from ahf_finance_agent.s4hana import S4HANAClient, get_s4hana_client
-from ahf_finance_agent.tools import TOOL_SPECS, dispatch_tool, render_tool_content
+from ahf_finance_agent.tools import (
+    POLICY_TOOL_NAME,
+    TOOL_SPECS,
+    dispatch_policy_tool,
+    dispatch_tool,
+    render_tool_content,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -52,7 +58,8 @@ class Answer:
     completion_tokens: int | None = None
     llm_latency_ms: int | None = None
     degraded: bool = False  # True when we fell back because the LLM failed
-    tools: list[str] = field(default_factory=list)  # S/4HANA tools invoked this turn
+    tools: list[str] = field(default_factory=list)  # tools invoked this turn
+    kb_hits: int = 0  # policy passages retrieved by search_policy_docs this turn
 
 
 class AnswerGenerator:
@@ -62,10 +69,12 @@ class AnswerGenerator:
         system_prompt: str | None = None,
         *,
         s4_client: S4HANAClient | None = None,
+        kb_index=None,
     ) -> None:
         self._client = client
-        self._system_prompt = system_prompt or TOOLS_SYSTEM_PROMPT
+        self._system_prompt = system_prompt or RAG_SYSTEM_PROMPT
         self._s4_client = s4_client
+        self._kb_index = kb_index
 
     @property
     def client(self) -> GenAIHubClient:
@@ -82,7 +91,25 @@ class AnswerGenerator:
             self._s4_client = get_s4hana_client()
         return self._s4_client
 
-    def generate(self, question: str) -> Answer:
+    @property
+    def kb_index(self):
+        # Lazy — only touched when the model calls search_policy_docs. Loading
+        # the index reads a file off disk; keep it out of __init__ / tests that
+        # don't exercise it.
+        if self._kb_index is None:
+            from ahf_finance_agent.knowledge_base import get_index
+
+            self._kb_index = get_index()
+        return self._kb_index
+
+    def generate(self, question: str, history: list[dict] | None = None) -> Answer:
+        """Answer one turn.
+
+        ``history`` is the prior conversation as ``[{"role": "user"|"assistant",
+        "content": str}, ...]`` (oldest first, excluding the current question),
+        so follow-ups like "is it blocked?" have context. It is trimmed and
+        sanitised by :func:`sanitize_history` before use.
+        """
         question = (question or "").strip()
         if not question:
             return Answer(
@@ -90,13 +117,13 @@ class AnswerGenerator:
                 escalated=False,
             )
 
-        messages: list[dict] = [
-            {"role": "system", "content": self._system_prompt},
-            {"role": "user", "content": question},
-        ]
+        messages: list[dict] = [{"role": "system", "content": self._system_prompt}]
+        messages.extend(sanitize_history(history))
+        messages.append({"role": "user", "content": question})
         max_iterations = get_settings().s4hana_max_tool_iterations
         tools_used: list[str] = []
         grounded = False
+        kb_hits = 0
 
         try:
             result = self.client.chat(messages, tools=TOOL_SPECS)
@@ -106,7 +133,11 @@ class AnswerGenerator:
                 messages.append(result.assistant_message or {"role": "assistant", "content": result.text})
                 for call in result.tool_calls:
                     tools_used.append(call.name)
-                    outcome = dispatch_tool(call.name, call.raw_arguments, self.s4_client)
+                    if call.name == POLICY_TOOL_NAME:
+                        outcome = dispatch_policy_tool(call.raw_arguments, self.kb_index)
+                        kb_hits += len(outcome.content.get("results", []))
+                    else:
+                        outcome = dispatch_tool(call.name, call.raw_arguments, self.s4_client)
                     grounded = grounded or outcome.grounded
                     logger.info(
                         "tool call: name=%s grounded=%s", call.name, outcome.grounded
@@ -150,6 +181,7 @@ class AnswerGenerator:
                 escalated=True,
                 degraded=True,
                 tools=list(dict.fromkeys(tools_used)),
+                kb_hits=kb_hits,
             )
 
         safe_text, redactions = scrub_response(result.text)
@@ -166,7 +198,36 @@ class AnswerGenerator:
             completion_tokens=result.completion_tokens,
             llm_latency_ms=result.latency_ms,
             tools=list(dict.fromkeys(tools_used)),
+            kb_hits=kb_hits,
         )
+
+
+_HISTORY_ROLES = {"user", "assistant"}
+
+
+def sanitize_history(history: list[dict] | None) -> list[dict]:
+    """Normalise caller-supplied conversation history for the model.
+
+    * keeps only ``{"role": "user"|"assistant", "content": <non-empty str>}``
+    * drops consecutive duplicates (the A2A task store can double-append)
+    * keeps the most recent ``chat_history_max_messages`` entries
+    """
+    if not history:
+        return []
+    cleaned: list[dict] = []
+    for item in history:
+        if not isinstance(item, dict):
+            continue
+        role = item.get("role")
+        content = item.get("content")
+        if role not in _HISTORY_ROLES or not isinstance(content, str) or not content.strip():
+            continue
+        entry = {"role": role, "content": content.strip()}
+        if cleaned and cleaned[-1] == entry:
+            continue
+        cleaned.append(entry)
+    limit = max(0, get_settings().chat_history_max_messages)
+    return cleaned[-limit:] if limit else []
 
 
 def _looks_like_handoff(text: str) -> bool:

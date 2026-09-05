@@ -25,8 +25,10 @@ dependencies = [
 # step 3 (S/4HANA tool orchestration) is a hand-rolled tool-calling loop on the
 # openai SDK (see ahf_finance_agent/answering.py) — no langgraph/langchain, to
 # keep the dependency surface small and the loop fully unit-testable offline.
-# Populated in later build steps:
-#   step 4 (RAG / HANA vector store): hdbcli, langchain-hana
+# step 4 (RAG / policy KB): the `local` vector index in
+# ahf_finance_agent/knowledge_base.py is pure stdlib + httpx (already a dep) —
+# no new dependencies. The `hana` backend (SAP HANA Cloud vector store) is a
+# stub; wiring it up later adds `hdbcli` here.
 
 [project.scripts]
 ahf-finance-agent = "ahf_finance_agent:main"

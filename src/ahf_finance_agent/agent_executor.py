@@ -55,13 +55,145 @@ def _now() -> str:
     return datetime.now(tz=timezone.utc).isoformat()
 
 
+def _message_text(message: Message) -> str:
+    parts = []
+    for part in message.parts or []:
+        root = getattr(part, "root", part)
+        text = getattr(root, "text", None)
+        if text:
+            parts.append(text)
+    return "".join(parts).strip()
+
+
+def _messages_to_turns(messages, current_input: str) -> list[dict]:
+    """a2a ``Message`` list -> ``[{"role": "user"|"assistant", "content": str}]``,
+    dropping a trailing entry that just repeats the current question."""
+    out: list[dict] = []
+    for message in messages or []:
+        text = _message_text(message)
+        if not text:
+            continue
+        role = "assistant" if message.role == Role.agent else "user"
+        out.append({"role": role, "content": text})
+    if out and out[-1]["role"] == "user" and out[-1]["content"] == current_input.strip():
+        out.pop()
+    return out
+
+
+def _history_for_generate(task: Task | None, current_input: str) -> list[dict]:
+    """Prior conversation from the running task's ``history`` (a2a-sdk keeps
+    prior user turns + agent replies there, plus the current message last)."""
+    if task is None or not task.history:
+        return []
+    return _messages_to_turns(task.history, current_input)
+
+
+def _dedupe_consecutive(turns: list[dict]) -> list[dict]:
+    out: list[dict] = []
+    for t in turns:
+        if not out or out[-1] != t:
+            out.append(t)
+    return out
+
+
+def _log_inbound_shape(context: RequestContext) -> None:
+    """One-off diagnostic: dump every identifier/metadata field on an incoming
+    turn so we can see what Joule actually threads across turns. Safe — logs
+    keys and ids, not message text (unless LOG_MESSAGE_TEXT)."""
+    try:
+        import json
+
+        msg = getattr(context, "message", None)
+        info: dict = {
+            "ctx.task_id": getattr(context, "task_id", None),
+            "ctx.context_id": getattr(context, "context_id", None),
+            "ctx.metadata": _safe(getattr(context, "metadata", None)),
+            "ctx.related_tasks": [getattr(t, "id", None) for t in (getattr(context, "related_tasks", None) or [])],
+        }
+        if msg is not None:
+            info["msg.messageId"] = getattr(msg, "message_id", None)
+            info["msg.contextId"] = getattr(msg, "context_id", None)
+            info["msg.taskId"] = getattr(msg, "task_id", None)
+            info["msg.referenceTaskIds"] = getattr(msg, "reference_task_ids", None)
+            info["msg.metadata"] = _safe(getattr(msg, "metadata", None))
+            info["msg.extensions"] = getattr(msg, "extensions", None)
+        cc = getattr(context, "call_context", None)
+        if cc is not None:
+            info["call_context.state_keys"] = list(getattr(cc, "state", {}) or {})
+            info["call_context.user"] = str(getattr(cc, "user", None))
+        logger.info("INBOUND SHAPE %s", json.dumps(info, default=str)[:2000])
+    except Exception:  # never let diagnostics break a turn
+        logger.warning("could not log inbound shape", exc_info=True)
+
+
+def _safe(v):
+    if v is None:
+        return None
+    try:
+        if hasattr(v, "model_dump"):
+            return v.model_dump()
+        if isinstance(v, dict):
+            return {k: (str(val)[:120]) for k, val in v.items()}
+        return str(v)[:300]
+    except Exception:
+        return "<unserializable>"
+
+
 class FinanceChatBotExecutor(AgentExecutor):
     """Bridges the finance chatbot agent to the A2A protocol."""
 
-    def __init__(self, answer_generator: AnswerGenerator | None = None) -> None:
+    def __init__(self, answer_generator: AnswerGenerator | None = None, *, task_store=None) -> None:
         # AnswerGenerator's LLM client is lazy — constructing it here does not
         # touch the network or BTP.
         self._answers = answer_generator or AnswerGenerator()
+        # Optional: used to rebuild a conversation from earlier tasks that share
+        # a contextId, for clients (Joule) that thread only contextId and open a
+        # fresh task each turn.
+        self._task_store = task_store
+
+    async def _conversation_history(self, context: RequestContext, user_input: str) -> list[dict]:
+        """Best-effort prior turns for this conversation.
+
+        Prefers the running task's own history; if the client opened a fresh
+        task this turn but kept the same contextId, stitch history from the
+        other tasks in that context.
+        """
+        turns = _history_for_generate(context.current_task, user_input)
+        if turns:
+            return turns
+
+        store = self._task_store
+        ctx_id = context.context_id
+        if store is None or not ctx_id or not hasattr(store, "get_by_context"):
+            return []
+        try:
+            prior_tasks = await store.get_by_context(ctx_id)
+        except Exception:
+            logger.warning("Could not load context history for %s", ctx_id, exc_info=True)
+            return []
+
+        current_task_id = context.task_id
+        collected: list[dict] = []
+        for t in prior_tasks:
+            if t.id == current_task_id:
+                continue
+            for m in t.history or []:
+                text = _message_text(m)
+                if not text:
+                    continue
+                role = "assistant" if m.role == Role.agent else "user"
+                collected.append({"role": role, "content": text})
+            # A task in this repo ends every turn in `input_required` with the
+            # answer on status.message — include it if it's not already there.
+            sm = getattr(t.status, "message", None)
+            if sm is not None:
+                text = _message_text(sm)
+                if text and (not collected or collected[-1]["content"] != text):
+                    collected.append({"role": "assistant", "content": text})
+        collected = _dedupe_consecutive(collected)
+        if collected and collected[-1]["role"] == "user" and collected[-1]["content"] == user_input.strip():
+            collected.pop()
+        return collected
 
     async def execute(self, context: RequestContext, event_queue: EventQueue) -> None:
         settings = get_settings()
@@ -75,6 +207,7 @@ class FinanceChatBotExecutor(AgentExecutor):
             task is None,
             f" input={user_input!r}" if settings.log_message_text else "",
         )
+        _log_inbound_shape(context)
 
         if task is None:
             task = Task(
@@ -91,11 +224,17 @@ class FinanceChatBotExecutor(AgentExecutor):
             task.status = TaskStatus(state=TaskState.working, timestamp=_now())
             await event_queue.enqueue_event(task.model_copy(deep=True))
 
+        history = await self._conversation_history(context, user_input)
+        logger.info(
+            "message/send history: task_id=%s context_id=%s prior_messages=%d",
+            task.id, task.context_id, len(history),
+        )
+
         question_for_log = user_input if settings.log_message_text else ""
         with track(task.context_id or "", task.id, question_for_log) as rec:
             try:
                 # Blocking (openai SDK is sync) — keep it off the event loop.
-                answer = await asyncio.to_thread(self._answers.generate, user_input)
+                answer = await asyncio.to_thread(self._answers.generate, user_input, history)
             except Exception:
                 logger.exception("Answer generation raised unexpectedly: task_id=%s", task.id)
                 rec.status = "error"
@@ -103,6 +242,7 @@ class FinanceChatBotExecutor(AgentExecutor):
 
             rec.status = "answered"
             rec.grounded = answer.grounded
+            rec.kb_hits = answer.kb_hits
             rec.tools = answer.tools
             rec.escalated = answer.escalated or answer.degraded
             rec.redactions = answer.redactions
