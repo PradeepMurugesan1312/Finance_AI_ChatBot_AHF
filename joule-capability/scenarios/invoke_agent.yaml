@@ -1,30 +1,18 @@
 description: >
   Call this when an AHF employee or vendor asks about the status of a supplier
   invoice, payment, purchase order, or purchase requisition in SAP S/4HANA;
-  wants to see recent invoices for a vendor; asks whether a vendor is set up /
-  onboarded, or for a vendor's contact email or bank/IBAN details; asks
-  whether an invoice passed 3-way match or has a quantity/price variance;
+  wants recent invoices for a vendor; asks if a vendor is set up, or for a
+  contact email or bank/IBAN details; asks if an invoice passed 3-way match;
   asks about a company code, cost centre, profit centre, or G/L account
-  (master data, who is responsible, is it still valid, its balance/activity,
-  or budget / availability-control status); asks a PORTFOLIO-level accounts
-  payable or accounts receivable question for a company code or vendor/
-  customer (e.g. how much is owed / outstanding, total payables or
-  receivables, how many open items) rather than about one specific invoice;
-  or asks an accounts-payable, accounts-receivable, procurement, tax, or
-  general finance policy / process question (T&E rules, PO or PR approval
-  thresholds, vendor onboarding steps, invoice payment terms, three-way-match
-  tolerances, dunning/collections, tax codes). For example:
-  "What's the status of invoice 5105601234 for fiscal year 2026?",
-  "Has PO 4500001234 been approved?", "Is vendor 100000 set up?",
-  "What's the approval threshold for a purchase order?",
-  "How many days do I have to submit an expense report?",
-  "Is cost centre 1000 still valid, and who is responsible for it?",
-  "Is profit centre YB600 still valid?",
-  "What is the balance on G/L account 400000 for company code 1710?",
-  "Is there budget left for purchase order 4500001234?",
-  "What's our total accounts payable for company code 1710?",
-  "How much are we owed in accounts receivable?",
-  "What's our dunning process?", "Which tax code applies to a domestic purchase?"
+  (master data, who owns it, is it valid, balance/activity, or budget status);
+  asks a PORTFOLIO-level AP or AR question (how much is owed / outstanding,
+  total payables or receivables, open item count) rather than one invoice; or
+  asks an accounts-payable, accounts-receivable, procurement, tax, or finance
+  policy question (approval thresholds, onboarding, payment terms, match
+  tolerances, dunning/collections, tax codes). Examples: "Status of invoice
+  5105601234?", "PO approval threshold?", "Balance on G/L 400000 for CC 1710?",
+  "Total AP for CC 1710?", "How much are we owed in AR?", "Tax code for a
+  domestic purchase?"
 
 target:
   type: function
