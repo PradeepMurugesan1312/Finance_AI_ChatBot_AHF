@@ -40,5 +40,6 @@ def test_coverage_summary_partitions_all_domains():
     # The connected-today set matches what tools.py actually wires.
     assert set(cov["live"]) == {
         "accounts_payable", "procurement", "goods_receipt", "vendor_master", "payments",
-        "invoice_verification",
+        "invoice_verification", "general_ledger", "gl_accounts_balances",
+        "cost_centers", "profit_centers",
     }

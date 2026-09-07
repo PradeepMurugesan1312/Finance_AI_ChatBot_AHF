@@ -106,6 +106,57 @@ def test_prepends_odata_service_root_by_default(fake_s4):
     )
 
 
+def test_purchase_order_service_forces_sap_client_100(fake_s4):
+    # This tenant runs every other service on the destination's default client
+    # but API_PURCHASEORDER_PROCESS_SRV is only configured in client 100.
+    fake_s4.routes["/A_PurchaseOrder("] = {"json": _d({"PurchaseOrder": "4500000030"})}
+    S4HANAClient(_settings()).get_purchase_order_status("4500000030")
+    assert fake_s4.requests[-1]["params"]["sap-client"] == "100"
+
+
+def test_goods_receipt_lookup_also_forces_sap_client_100(fake_s4):
+    # Speculative (2026-09): tried the same client-100 override for goods
+    # receipts after they showed the same 401-shaped symptom as PO did. If
+    # this turns out wrong, delete this test along with the override entries.
+    fake_s4.routes["/A_MaterialDocumentItem"] = {"json": _d([{"MaterialDocument": "5000000001"}])}
+    S4HANAClient(_settings()).get_goods_receipts_for_po("4500000030")
+    assert fake_s4.requests[-1]["params"]["sap-client"] == "100"
+
+
+def test_master_data_services_confirmed_on_sap_client_100(fake_s4):
+    # Confirmed 2026-09 (user hit $metadata directly: 100 returns data, 400
+    # asks for credentials) -- unlike GR, not speculative.
+    fake_s4.routes["/A_CompanyCode("] = {"json": _d({"CompanyCode": "1710"})}
+    S4HANAClient(_settings()).get_company_code_details("1710")
+    assert fake_s4.requests[-1]["params"]["sap-client"] == "100"
+
+    fake_s4.routes["/A_CostCenter"] = {"json": _d([{"CostCenter": "1000"}])}
+    S4HANAClient(_settings()).get_cost_center_details("1000")
+    assert fake_s4.requests[-1]["params"]["sap-client"] == "100"
+
+    fake_s4.routes["/A_ProfitCenter"] = {"json": _d([{"ProfitCenter": "YB100"}])}
+    S4HANAClient(_settings()).get_profit_center_details("YB100")
+    assert fake_s4.requests[-1]["params"]["sap-client"] == "100"
+
+    fake_s4.routes["/A_GLAccountInChartOfAccounts"] = {"json": _d([{"GLAccount": "400000"}])}
+    S4HANAClient(_settings()).get_gl_account_master("400000")
+    assert fake_s4.requests[-1]["params"]["sap-client"] == "100"
+
+
+def test_journal_entry_item_stays_on_default_client(fake_s4):
+    # This one was already working on the default client before the new
+    # master-data services were added -- must not get swept into the override.
+    fake_s4.routes["/A_OperationalAcctgDocItemCube"] = {"json": _d([{"GLAccount": "400000"}])}
+    S4HANAClient(_settings()).get_gl_account_activity("1710", "400000")
+    assert "sap-client" not in fake_s4.requests[-1]["params"]
+
+
+def test_other_services_do_not_get_a_sap_client_override(fake_s4):
+    fake_s4.routes["/A_BusinessPartner("] = {"json": _d({"BusinessPartner": "1000000"})}
+    S4HANAClient(_settings()).get_vendor_details("1000000")
+    assert "sap-client" not in fake_s4.requests[-1]["params"]
+
+
 def test_odata_service_root_is_configurable(fake_s4):
     fake_s4.routes["/A_PurchaseOrder("] = {"json": _d({"PurchaseOrder": "4500001234"})}
     S4HANAClient(_settings(s4hana_odata_base_path="/sap/opu/odata/SAP")).get_purchase_order_status("4500001234")
@@ -437,25 +488,31 @@ def test_403_error_names_the_destination_user_authorization(fake_s4):
         S4HANAClient(_settings()).get_purchase_order_delivery_schedule("4500000030")
 
 
-def test_401_arms_cooldown_and_short_circuits_further_calls(fake_s4):
+def test_401_arms_cooldown_scoped_to_that_service_only(fake_s4):
     fake_s4.routes["/"] = {"status": 401, "json": {"error": {"message": {"value": "Logon failed"}}}}
     client = S4HANAClient(_settings())
 
     # get_purchase_order_status makes two internal _get() calls for an
     # uncached capability (a catalogue probe, then the real fetch); the probe
-    # already 401s and arms the cooldown, so the real fetch is itself
-    # short-circuited -- only one HTTP request actually reaches S/4HANA.
+    # already 401s and arms that service's cooldown, so the real fetch is
+    # itself short-circuited -- only one HTTP request actually reaches
+    # S/4HANA for this service.
     with pytest.raises(S4HANAError):
         client.get_purchase_order_status("4500000030")
     calls_after_first = len(fake_s4.requests)
-    assert calls_after_first == 1  # one real attempt against S/4HANA
+    assert calls_after_first == 1  # one real attempt against the PO service
 
-    # A second, unrelated lookup within the cooldown must NOT hit S/4HANA again
-    # (it would just be another failed logon against the tenant) -- and gets a
-    # distinct, lighter "retry shortly" message rather than the raw 401 again.
+    # A second call to the SAME service (PO) within the cooldown must NOT hit
+    # S/4HANA again, and gets a distinct, lighter "retry shortly" message.
     with pytest.raises(S4HANAError, match="retry in a few seconds"):
-        client.get_vendor_details("1000000")
+        client.get_purchase_order_status("4500000030")
     assert len(fake_s4.requests) == calls_after_first  # no new HTTP call
+
+    # A DIFFERENT service (Business Partner) must NOT be affected by the PO
+    # cooldown -- this is the fix: one broken service must not pause everything.
+    with pytest.raises(S4HANAError, match="credentials were rejected"):
+        client.get_vendor_details("1000000")
+    assert len(fake_s4.requests) == calls_after_first + 1  # a fresh real attempt
 
 
 def test_401_cooldown_expires_and_retries_s4hana(fake_s4):
@@ -465,19 +522,24 @@ def test_401_cooldown_expires_and_retries_s4hana(fake_s4):
         client.get_purchase_order_status("4500000030")
     assert len(fake_s4.requests) == 1
 
-    client._auth_broken_until = time.monotonic() - 1  # simulate cooldown elapsed
+    client._auth_broken_until["API_PURCHASEORDER_PROCESS_SRV"] = time.monotonic() - 1  # cooldown elapsed
     with pytest.raises(S4HANAError):
         client.get_purchase_order_status("4500000030")
     assert len(fake_s4.requests) == 2  # tried S/4HANA again
 
 
-def test_probe_catalog_makes_one_real_call_when_destination_401s(fake_s4):
+def test_probe_catalog_makes_one_real_call_per_distinct_service_when_401ing(fake_s4):
     fake_s4.routes["/"] = {"status": 401, "json": {"error": {"message": {"value": "Logon failed"}}}}
     out = S4HANAClient(_settings()).probe_catalog()
     assert all(v["ok"] is False for v in out.values())
-    # ~20 candidates across the catalogue, but only the first probe should have
-    # actually reached S/4HANA -- the rest are short-circuited by the cooldown.
-    assert len(fake_s4.requests) == 1
+    # The cooldown is scoped per SERVICE, not the whole client: a service that
+    # appears as a candidate for more than one capability (or with more than
+    # one entity set) is only actually attempted once -- repeats within the
+    # same probe_catalog() call are short-circuited by that service's own
+    # cooldown -- but a 401 on one service must NOT suppress the attempt on a
+    # different, unrelated service.
+    distinct_services = {srv for candidates in s4._SERVICE_CATALOG.values() for srv, _ in candidates}
+    assert len(fake_s4.requests) == len(distinct_services)
 
 
 def test_probe_classifies_status_codes(fake_s4):
@@ -513,6 +575,7 @@ def test_probe_catalog_reports_every_capability(fake_s4):
         "goods_receipt_item", "purchase_requisition_header", "purchase_requisition_item",
         "business_partner", "supplier", "budget",
         "business_partner_address", "address_email", "business_partner_bank",
+        "company_code", "cost_center", "profit_center", "gl_account_master",
     }
     assert all(v["ok"] for v in out.values())
     assert out["supplier_invoice_item"]["resolved"].endswith("A_SuplrInvcItemPurOrdRef")
@@ -839,6 +902,211 @@ def test_budget_status_computes_po_commitment_value(fake_s4):
     assert commitment["committedValue"] == 12500.0
     assert commitment["currency"] == "USD"
     assert commitment["lineCount"] == 2
+
+
+def test_get_gl_account_activity_computes_net_posted_amount(fake_s4):
+    fake_s4.routes["/A_OperationalAcctgDocItemCube"] = {
+        "json": _d([
+            {"GLAccount": "400000", "CompanyCode": "1710", "FiscalYear": "2026",
+             "AmountInCompanyCodeCurrency": "10000.00", "CompanyCodeCurrency": "USD", "DebitCreditCode": "S"},
+            {"GLAccount": "400000", "CompanyCode": "1710", "FiscalYear": "2026",
+             "AmountInCompanyCodeCurrency": "2500.00", "CompanyCodeCurrency": "USD", "DebitCreditCode": "H"},
+        ])
+    }
+    out = S4HANAClient(_settings()).get_gl_account_activity("1710", "400000", "2026")
+    assert out["netPostedAmount"] == 7500.0
+    assert out["currency"] == "USD"
+    assert out["postingCount"] == 2
+    assert "not an official" in out["note"].lower()
+    assert fake_s4.requests[-1]["params"]["$filter"] == (
+        "GLAccount eq '400000' and CompanyCode eq '1710' and FiscalYear eq '2026'"
+    )
+
+
+def test_get_gl_account_activity_none_when_no_postings(fake_s4):
+    fake_s4.routes["/A_OperationalAcctgDocItemCube"] = {"json": _d([])}
+    assert S4HANAClient(_settings()).get_gl_account_activity("1710", "999999") is None
+
+
+def test_get_accounts_payable_summary_sums_open_vendor_items_only(fake_s4):
+    fake_s4.routes["/A_OperationalAcctgDocItemCube"] = {
+        "json": _d([
+            # open vendor line (payable, credit) -> counts, owed = 5000
+            {"CompanyCode": "1710", "Supplier": "100000", "AmountInCompanyCodeCurrency": "5000.00",
+             "CompanyCodeCurrency": "USD", "DebitCreditCode": "H", "ClearingDate": None},
+            # already cleared vendor line -> excluded
+            {"CompanyCode": "1710", "Supplier": "100000", "AmountInCompanyCodeCurrency": "1000.00",
+             "CompanyCodeCurrency": "USD", "DebitCreditCode": "H", "ClearingDate": "/Date(1719360000000+0000)/"},
+            # non-vendor (no Supplier) line -> excluded
+            {"CompanyCode": "1710", "AmountInCompanyCodeCurrency": "2000.00",
+             "CompanyCodeCurrency": "USD", "DebitCreditCode": "S", "ClearingDate": None},
+        ])
+    }
+    out = S4HANAClient(_settings()).get_accounts_payable_summary("1710")
+    assert out["connected"] is True
+    assert out["openItemCount"] == 1
+    assert out["netOpenAmount"] == 5000.0
+    assert out["currency"] == "USD"
+    assert "aging report" in out["note"].lower()
+    assert fake_s4.requests[-1]["params"]["$filter"] == "CompanyCode eq '1710'"
+
+
+def test_get_accounts_payable_summary_scopes_to_one_vendor(fake_s4):
+    fake_s4.routes["/A_OperationalAcctgDocItemCube"] = {"json": _d([])}
+    S4HANAClient(_settings()).get_accounts_payable_summary("1710", vendor="100000")
+    assert fake_s4.requests[-1]["params"]["$filter"] == (
+        "CompanyCode eq '1710' and Supplier eq '100000'"
+    )
+
+
+def test_get_accounts_payable_summary_reports_error_cleanly(fake_s4):
+    # Block all three journal_entry_item catalogue candidates (order matters:
+    # "/A_JournalEntryItem" is a substring of "/A_JournalEntryItemBasic", so the
+    # Basic route must be registered first — see _FakeClient's first-match rule).
+    _forbidden = {"status": 403, "json": {"error": {"message": {"value": "no auth"}}}}
+    fake_s4.routes["/A_OperationalAcctgDocItemCube"] = _forbidden
+    fake_s4.routes["/A_JournalEntryItemBasic"] = _forbidden
+    fake_s4.routes["/A_JournalEntryItem"] = _forbidden
+    out = S4HANAClient(_settings()).get_accounts_payable_summary("1710")
+    assert out["connected"] is False
+    assert out["openItemCount"] is None
+    assert "not available" in out["message"].lower()
+
+
+def test_get_accounts_receivable_summary_sums_open_customer_items(fake_s4):
+    fake_s4.routes["/A_OperationalAcctgDocItemCube"] = {
+        "json": _d([
+            {"CompanyCode": "1710", "Customer": "200000", "AmountInCompanyCodeCurrency": "900.00",
+             "CompanyCodeCurrency": "USD", "DebitCreditCode": "S", "ClearingDate": None},
+        ])
+    }
+    out = S4HANAClient(_settings()).get_accounts_receivable_summary("1710")
+    assert out["connected"] is True
+    assert out["openItemCount"] == 1
+    assert out["netOpenAmount"] == 900.0
+
+
+def test_get_accounts_receivable_summary_detects_missing_customer_field(fake_s4):
+    # Rows come back but with no "Customer" key at all -> field not modelled here.
+    fake_s4.routes["/A_OperationalAcctgDocItemCube"] = {
+        "json": _d([
+            {"CompanyCode": "1710", "Supplier": "100000", "AmountInCompanyCodeCurrency": "5000.00",
+             "CompanyCodeCurrency": "USD", "DebitCreditCode": "H", "ClearingDate": None},
+        ])
+    }
+    out = S4HANAClient(_settings()).get_accounts_receivable_summary("1710")
+    assert out["connected"] is False
+    assert out["openItemCount"] is None
+    assert "does not expose a customer" in out["message"].lower()
+
+
+def test_get_accounts_receivable_summary_empty_result_is_inconclusive_not_a_false_zero(fake_s4):
+    # No rows at all means we can't tell "no open receivables" apart from
+    # "Customer isn't modelled here" — must not silently claim a confident zero.
+    fake_s4.routes["/A_OperationalAcctgDocItemCube"] = {"json": _d([])}
+    out = S4HANAClient(_settings()).get_accounts_receivable_summary("1710")
+    assert out["connected"] is None
+    assert out["openItemCount"] is None
+    assert "inconclusive" in out["message"].lower()
+
+
+def test_get_company_code_details(fake_s4):
+    fake_s4.routes["/A_CompanyCode("] = {
+        "json": _d({
+            "CompanyCode": "1710", "CompanyCodeName": "AHF US", "Country": "US",
+            "Currency": "USD", "ChartOfAccounts": "YCOA", "FiscalYearVariant": "K4",
+        })
+    }
+    out = S4HANAClient(_settings()).get_company_code_details("1710")
+    assert out["Currency"] == "USD"
+    assert out["ChartOfAccounts"] == "YCOA"
+
+
+def test_get_cost_center_details_filters_and_returns_first_match(fake_s4):
+    fake_s4.routes["/A_CostCenter"] = {
+        "json": _d([{
+            "CostCenter": "1000", "ControllingArea": "1710", "PersonResponsible": "BPINST",
+            "ProfitCenter": "YB100", "ValidityEndDate": "/Date(253402300799000+0000)/",
+        }])
+    }
+    out = S4HANAClient(_settings()).get_cost_center_details("1000")
+    assert out["PersonResponsible"] == "BPINST"
+    assert out["ProfitCenter"] == "YB100"
+    assert out["isCurrentlyValid"] is True
+    assert fake_s4.requests[-1]["params"]["$filter"] == "CostCenter eq '1000'"
+
+
+def test_is_currently_valid_helper():
+    from ahf_finance_agent.s4hana import _is_currently_valid
+
+    far_future = "/Date(253402214400000)/"
+    far_past = "/Date(946684800000)/"
+    assert _is_currently_valid(far_past, far_future) is True
+    assert _is_currently_valid(far_past, far_past) is False  # ended long ago
+    assert _is_currently_valid(far_future, far_future) is False  # not started yet
+    assert _is_currently_valid(None, None) is None  # no usable date -- can't tell, not "no"
+
+
+def test_get_cost_center_details_none_when_not_found(fake_s4):
+    fake_s4.routes["/A_CostCenter"] = {"json": _d([])}
+    assert S4HANAClient(_settings()).get_cost_center_details("9999999") is None
+
+
+def test_get_profit_center_details_using_confirmed_live_field_shape(fake_s4):
+    # Shape confirmed against the live tenant (2026-09) -- ProfitCenterName /
+    # Description / Name / SegmentName do NOT exist on this build; these do.
+    fake_s4.routes["/A_ProfitCenter"] = {
+        "json": _d([{
+            "ProfitCenter": "YB600", "ControllingArea": "A000",
+            "ValidityStartDate": "/Date(946684800000)/",
+            "ValidityEndDate": "/Date(253402214400000)/",  # 9999-12-31 -> effectively no expiry
+            "ProfitCenterIsBlocked": "", "ProfitCtrResponsiblePersonName": "S4H_MM",
+            "ProfitCtrResponsibleUser": "S4H_MM", "Segment": "1000_C",
+            "ProfitCenterStandardHierarchy": "YBH119", "CompanyCode": "",
+        }])
+    }
+    out = S4HANAClient(_settings()).get_profit_center_details("YB600")
+    assert out["Segment"] == "1000_C"
+    assert out["ProfitCtrResponsibleUser"] == "S4H_MM"
+    assert out["isCurrentlyValid"] is True
+
+
+def test_get_profit_center_details_blocked_is_never_valid(fake_s4):
+    fake_s4.routes["/A_ProfitCenter"] = {
+        "json": _d([{
+            "ProfitCenter": "YB601", "ControllingArea": "A000",
+            "ValidityStartDate": "/Date(946684800000)/",
+            "ValidityEndDate": "/Date(253402214400000)/",
+            "ProfitCenterIsBlocked": "X",
+        }])
+    }
+    out = S4HANAClient(_settings()).get_profit_center_details("YB601")
+    assert out["isCurrentlyValid"] is False
+
+
+def test_get_profit_center_details_expired_is_not_valid(fake_s4):
+    fake_s4.routes["/A_ProfitCenter"] = {
+        "json": _d([{
+            "ProfitCenter": "YB602", "ControllingArea": "A000",
+            "ValidityStartDate": "/Date(946684800000)/",
+            "ValidityEndDate": "/Date(978307200000)/",  # 2001-01-01, long past
+            "ProfitCenterIsBlocked": "",
+        }])
+    }
+    out = S4HANAClient(_settings()).get_profit_center_details("YB602")
+    assert out["isCurrentlyValid"] is False
+
+
+def test_get_gl_account_master(fake_s4):
+    fake_s4.routes["/A_GLAccountInChartOfAccounts"] = {
+        "json": _d([{
+            "ChartOfAccounts": "YCOA", "GLAccount": "400000",
+            "IsBalanceSheetAccount": False, "GLAccountGroup": "EXPN",
+        }])
+    }
+    out = S4HANAClient(_settings()).get_gl_account_master("400000")
+    assert out["IsBalanceSheetAccount"] is False
+    assert out["GLAccountGroup"] == "EXPN"
 
 
 def test_vendor_details_attaches_supplier_block_status_and_never_returns_bank(fake_s4):

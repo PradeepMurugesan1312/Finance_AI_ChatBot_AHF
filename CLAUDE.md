@@ -135,6 +135,25 @@ Notes:
   segment).
 - **Dropped `$select` fields**: several standard fields are absent from this
   build's services (e.g. `IsPaid`); `_select_get()` drops them on retry.
+- **`API_PURCHASEORDER_PROCESS_SRV` lives in a different SAP client (100)**
+  than every other service on this tenant (default client 400) — confirmed by
+  hitting its `$metadata` with `?sap-client=100` directly. Without that, PO
+  calls looked like a "logon failure" (401), which was originally misdiagnosed
+  as a broader destination-auth outage. Fixed via `_SAP_CLIENT_OVERRIDE` in
+  `s4hana.py`, which forces `sap-client=100` on `API_PURCHASEORDER_PROCESS_SRV`
+  requests only — every other service keeps using the destination's default.
+  If another service ever turns out to need a non-default client, add it to
+  that dict rather than assuming the whole destination is broken.
+  **Confirmed (same way) for four more**: `API_COMPANYCODE_SRV`,
+  `API_COSTCENTER_SRV`, `API_PROFITCENTER_SRV`, and
+  `API_GLACCOUNTINCHARTOFACCOUNTS_SRV` also only return data on `sap-client=100`
+  (400 asks for credentials); `API_MATERIAL_DOCUMENT_SRV` /
+  `API_GOODS_RECEIPT_SRV` are in the override too but *unconfirmed*
+  (speculative, based on the same symptom). `API_OPLACCTGDOCITEMCUBE_SRV`
+  stays on the default client — already working before this. The 401 cooldown
+  in `s4hana.py` is scoped per service (a dict keyed by service name), not the
+  whole client, precisely so one misconfigured service's 401 can't pause every
+  other (working) service too.
 - **`API_JOURNALENTRYITEMBASIC_SRV` has no `AccountingDocument`** on
   `A_JournalEntryItemBasic` on this build — see the bug below. This is an
   ~1809+ compositional API on a 1710 system; older FI line-item surface is

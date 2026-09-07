@@ -21,6 +21,11 @@ vendor / business partner    ``API_BUSINESS_PARTNER``                   ``A_Busi
 vendor / contact email       ``API_BUSINESS_PARTNER``                   ``A_BusinessPartnerAddress`` -> ``A_AddressEmailAddress`` (PII exception — see get_vendor_email_addresses)
 vendor bank account (IBAN)   ``API_BUSINESS_PARTNER``                   ``A_BusinessPartnerBank`` (PII/fraud-risk exception — see get_vendor_bank_accounts; NOT a bank statement, no live source for that)
 budget status (computed)     Funds Mgmt / CO budget (none standard)     budgetAvailable=false always; actualSpend/commitmentValue computed from journal_entry_item / PO items
+company code master          ``API_COMPANYCODE_SRV``                    ``A_CompanyCode``
+cost centre master           ``API_COSTCENTER_SRV``                     ``A_CostCenter``
+profit centre master         ``API_PROFITCENTER_SRV``                   ``A_ProfitCenter`` (+ computed ``isCurrentlyValid``)
+G/L account master           ``API_GLACCOUNTINCHARTOFACCOUNTS_SRV``     ``A_GLAccountInChartOfAccounts``
+G/L account activity         ``API_OPLACCTGDOCITEMCUBE_SRV`` (computed) same journal_entry_item source as get_cost_object_actuals, filtered by GLAccount
 ===========================  =========================================  ============================
 
 The procure-to-pay APIs still mapped to the policy knowledge base only (no live
@@ -162,6 +167,24 @@ _ACTUALS_SELECT = (
     "GLAccount", "CostCenter", "OrderID", "WBSElement",
     "PurchaseOrder", "PurchaseOrderItem",
 )
+# Same journal_entry_item cube, selected for a company-wide AP/AR OPEN ITEMS
+# summary (get_accounts_payable_summary / get_accounts_receivable_summary)
+# instead of one cost object or G/L account. "Supplier" is CONFIRMED present
+# and populated on this tenant (it's already relied on in production by
+# get_payment_clearing_status / the FI-doc reference resolver). "Customer" is
+# NOT confirmed — this cube's underlying CDS view (the S/4HANA universal
+# journal) typically carries it alongside Supplier, but nobody has checked
+# this tenant's actual $metadata for it. If it isn't modelled here,
+# _select_get() silently drops it and every row simply lacks a "Customer" key
+# — get_accounts_receivable_summary() detects that (rather than quietly
+# reporting a wrong zero) and reports AR as not connected instead. Do not
+# remove that detection without confirming the field against a live
+# $metadata check first.
+_OPEN_ITEMS_SELECT = (
+    "CompanyCode", "FiscalYear", "AccountingDocument", "AccountingDocumentItem",
+    "PostingDate", "DocumentDate", "AmountInCompanyCodeCurrency", "CompanyCodeCurrency",
+    "DebitCreditCode", "Supplier", "Customer", "ClearingDate",
+)
 
 _PO_SRV = "API_PURCHASEORDER_PROCESS_SRV"
 _PO_SET = "A_PurchaseOrder"
@@ -291,6 +314,77 @@ _BP_BANK_SELECT = (
     "ValidityStartDate", "ValidityEndDate",
 )
 
+_CC_SRV = "API_COMPANYCODE_SRV"
+_CC_SET = "A_CompanyCode"
+_CC_SELECT = (
+    "CompanyCode", "CompanyCodeName", "CityName", "Country", "Currency",
+    "Language", "ChartOfAccounts", "FiscalYearVariant",
+)
+
+_COST_CENTER_SRV = "API_COSTCENTER_SRV"
+_COST_CENTER_SET = "A_CostCenter"
+# Master data (validity, ownership, currency) — distinct from
+# get_cost_object_actuals(), which sums live *postings* against the cost
+# centre. "PersonResponsible" is a guess (unverified) and dropped by self-heal
+# if wrong — see the A_ProfitCenter lesson below: this tenant names that field
+# differently per entity (A_ProfitCenter uses ProfitCtrResponsiblePersonName /
+# ProfitCtrResponsibleUser, not a plain "PersonResponsible"). The description
+# text (if any) lives behind a to_Text navigation, not inline, so it is not
+# requested here.
+_COST_CENTER_SELECT = (
+    "CostCenter", "ControllingArea", "ValidityStartDate", "ValidityEndDate",
+    "CompanyCode", "PersonResponsible", "CostCenterCategory", "ProfitCenter",
+    "Currency",
+)
+
+_PROFIT_CENTER_SRV = "API_PROFITCENTER_SRV"
+_PROFIT_CENTER_SET = "A_ProfitCenter"
+# Confirmed against this tenant's live data (2026-09) — the earlier guessed
+# fields (ProfitCenterName / Description / Name / SegmentName) do not exist at
+# all; the real block/responsibility/segment fields are named quite
+# differently, and there is no inline description (it's behind to_Text, not
+# requested here — nothing in this agent needs it beyond what's below).
+_PROFIT_CENTER_SELECT = (
+    "ProfitCenter", "ControllingArea", "ValidityStartDate", "ValidityEndDate",
+    "ProfitCenterIsBlocked", "ProfitCtrResponsiblePersonName",
+    "ProfitCtrResponsibleUser", "Segment", "ProfitCenterStandardHierarchy",
+    "CompanyCode",
+)
+
+_GL_MASTER_SRV = "API_GLACCOUNTINCHARTOFACCOUNTS_SRV"
+_GL_MASTER_SET = "A_GLAccountInChartOfAccounts"
+_GL_MASTER_SELECT = (
+    "ChartOfAccounts", "GLAccount", "GLAccountGroup", "IsBalanceSheetAccount",
+    "AccountIsBlockedForPosting", "AccountIsBlockedForPlanning",
+    "ShortText", "GLAccountLongText",
+)
+
+# This tenant runs most OData services against the destination's default SAP
+# client, but a few are only configured/activated in a different one —
+# confirmed by hitting a service's $metadata directly with ?sap-client=NNN.
+# Requesting the wrong client for one of these looks exactly like a login
+# failure (401), not a clean "service not found", so misdiagnosing this as a
+# broader destination-auth outage is an easy mistake (happened once already,
+# for PO). Add a service name here (as it appears in the URL) only once
+# confirmed against the tenant; every service without an entry keeps using the
+# destination's default (400) unchanged.
+_SAP_CLIENT_OVERRIDE: dict[str, str] = {
+    _PO_SRV: "100",  # API_PURCHASEORDER_PROCESS_SRV — confirmed 2026-09
+    # Tried speculatively (2026-09) for goods-receipt lookups, which showed the
+    # same 401-shaped symptom as PO before the fix above. Unconfirmed — if GR
+    # lookups still fail (or now return empty/wrong data) after this, it was
+    # the wrong guess; remove these two lines rather than assume they're right.
+    _MATERIAL_DOC_SRV: "100",
+    "API_GOODS_RECEIPT_SRV": "100",
+    # Confirmed 2026-09: same client-100 pattern for the CO/FI master-data
+    # services added alongside the PO/GR ones — user hit $metadata directly
+    # with ?sap-client=100 vs 400 and confirmed only 100 returns data.
+    _CC_SRV: "100",
+    _COST_CENTER_SRV: "100",
+    _PROFIT_CENTER_SRV: "100",
+    _GL_MASTER_SRV: "100",
+}
+
 
 # --- capability catalogue --------------------------------------------------
 # Each logical capability maps to an ordered list of ``(service, entity_set)``
@@ -357,6 +451,18 @@ _SERVICE_CATALOG: dict[str, tuple[tuple[str, str], ...]] = {
     ),
     "business_partner_bank": (
         (_BP_SRV, _BP_BANK_SET),
+    ),
+    "company_code": (
+        (_CC_SRV, _CC_SET),
+    ),
+    "cost_center": (
+        (_COST_CENTER_SRV, _COST_CENTER_SET),
+    ),
+    "profit_center": (
+        (_PROFIT_CENTER_SRV, _PROFIT_CENTER_SET),
+    ),
+    "gl_account_master": (
+        (_GL_MASTER_SRV, _GL_MASTER_SET),
     ),
     # Budget / availability control. No released OData surface is reliably
     # present across S/4HANA builds (Funds Management, CO planning and internal-
@@ -477,6 +583,33 @@ def _round(value: float | None, places: int = 3) -> float | None:
     return None if value is None else round(value, places)
 
 
+_SAP_DATE_MS_RE = re.compile(r"/Date\((-?\d+)")
+
+
+def _sap_date_ms(value: Any) -> int | None:
+    """Milliseconds-since-epoch out of an OData ``/Date(1719360000000+0000)/``
+    string, or ``None`` if *value* isn't one."""
+    if not isinstance(value, str):
+        return None
+    m = _SAP_DATE_MS_RE.search(value)
+    return int(m.group(1)) if m else None
+
+
+def _is_currently_valid(start: Any, end: Any) -> bool | None:
+    """Whether *now* falls within [*start*, *end*] (both OData ``/Date(...)/``
+    values, either optional). ``None`` when neither carries a usable date —
+    "can't tell", not "no"."""
+    start_ms, end_ms = _sap_date_ms(start), _sap_date_ms(end)
+    if start_ms is None and end_ms is None:
+        return None
+    now_ms = time.time() * 1000
+    if start_ms is not None and now_ms < start_ms:
+        return False
+    if end_ms is not None and now_ms > end_ms:
+        return False
+    return True
+
+
 def _is_odata_error_body(resp: httpx.Response) -> bool:
     """True when a 4xx body is a SAP Gateway OData error (``{"error": {...}}``).
 
@@ -515,13 +648,18 @@ class S4HANAClient:
     expiry) and uses a fresh short-lived ``httpx.Client``, so a rotated token
     is never a problem.
 
-    Not stateless about failure, though: a 401 means the destination's
-    credentials are rejected system-wide, so every subsequent call for
-    ``_AUTH_COOLDOWN_SECONDS`` short-circuits with that same error instead of
-    hitting S/4HANA again — repeatedly retrying known-bad credentials (e.g.
+    Not stateless about failure, though: a 401 on a given OData service arms a
+    ``_AUTH_COOLDOWN_SECONDS`` cooldown for THAT SERVICE, so subsequent calls
+    to it short-circuit with a lighter "retry shortly" error instead of
+    hitting S/4HANA again — repeatedly retrying a known-bad service (e.g.
     across every capability-catalogue candidate on one ``/diag/s4/catalog``
     call) just spams the tenant with failed logons, which under a lockout
-    policy can turn a bad password into a locked account.
+    policy can turn a bad password into a locked account. Scoped per service
+    rather than the whole destination on purpose: on this tenant a 401 has
+    repeatedly turned out to be one service needing a different SAP client
+    (see ``_SAP_CLIENT_OVERRIDE``), not the destination's credentials being
+    globally wrong — a global cooldown would pause every other, working
+    service too every time one misconfigured service 401s.
     """
 
     def __init__(self, settings: Settings | None = None) -> None:
@@ -531,10 +669,11 @@ class S4HANAClient:
         # while a fresh client in a test starts clean.
         self._cap_cache: dict[str, tuple[str, str, float]] = {}
         self._cap_lock = threading.Lock()
-        # monotonic() deadline until which _get() short-circuits with a "retry
-        # shortly" error instead of calling S/4HANA again. See
-        # _AUTH_COOLDOWN_SECONDS.
-        self._auth_broken_until = 0.0
+        # service name -> monotonic() deadline until which _get() short-circuits
+        # calls to THAT service with a "retry shortly" error instead of hitting
+        # S/4HANA again. Scoped per service, not the whole client: see
+        # _AUTH_COOLDOWN_SECONDS and the comment in _get().
+        self._auth_broken_until: dict[str, float] = {}
 
     # -- capability catalogue --------------------------------------------
     def _probe(self, service: str, entity_set: str) -> str:
@@ -674,16 +813,25 @@ class S4HANAClient:
     # -- transport ----------------------------------------------------
     def _get(self, path: str, params: dict[str, str] | None = None) -> Any:
         s = self._s
-        remaining = self._auth_broken_until - time.monotonic()
+        # Extracted up front (not just for the sap-client override below) so
+        # the auth cooldown can be scoped per SERVICE rather than the whole
+        # destination — a 401 on this tenant has repeatedly turned out to be
+        # one service needing a different SAP client (see
+        # _SAP_CLIENT_OVERRIDE), not the destination's credentials being
+        # rejected outright. A global cooldown would pause every OTHER
+        # (working) service too every time one misconfigured service 401s.
+        service_name = path.strip("/").split("/", 1)[0]
+        remaining = self._auth_broken_until.get(service_name, 0.0) - time.monotonic()
         if remaining > 0:
             # Deliberately a distinct, lighter message from the original 401
             # (below): this is a brief, likely-transient cooldown after a
             # recent failed logon elsewhere, not a fresh diagnostic — phrase it
             # as "retry shortly", not as a fresh systemic failure.
             raise S4HANAError(
-                f"S/4HANA lookup temporarily paused ({remaining:.0f}s left): a recent call to this "
-                f"tenant hit a logon failure, so further calls are briefly held off to avoid piling "
-                "on more failed logons. This is usually transient — retry in a few seconds."
+                f"S/4HANA lookup on {service_name} temporarily paused ({remaining:.0f}s left): a "
+                f"recent call to this service hit a logon failure, so further calls to it are "
+                "briefly held off to avoid piling on more failed logons. This is usually transient "
+                "— retry in a few seconds. Other services are unaffected."
             )
         try:
             dest = resolve_destination(s.s4hana_destination_name)
@@ -699,6 +847,9 @@ class S4HANAClient:
             proxy = httpx.Proxy(url=dest.proxy["url"], headers=dest.proxy.get("headers"))
 
         query = {"$format": "json", **(params or {})}
+        client_override = _SAP_CLIENT_OVERRIDE.get(service_name)
+        if client_override:
+            query["sap-client"] = client_override
         # Prepend the OData service root (default /sap/opu/odata/sap) so the S43
         # destination can stay a bare host:port. dest.url may still carry it —
         # set S4HANA_ODATA_BASE_PATH="" then.
@@ -735,17 +886,18 @@ class S4HANAClient:
                 "service is activated."
             )
         if resp.status_code == 401:
-            logger.error("S/4HANA 401 on %s — %r destination credentials rejected (body=%s)",
-                         url, s.s4hana_destination_name, resp.text[:300])
-            self._auth_broken_until = time.monotonic() + _AUTH_COOLDOWN_SECONDS
+            logger.error("S/4HANA 401 on %s (service=%s) — %r destination credentials rejected (body=%s)",
+                         url, service_name, s.s4hana_destination_name, resp.text[:300])
+            self._auth_broken_until[service_name] = time.monotonic() + _AUTH_COOLDOWN_SECONDS
             raise S4HANAError(
                 f"S/4HANA returned 401 for {url!r}: the {s.s4hana_destination_name!r} destination's "
-                "credentials were rejected (logon failed). This is system-wide, not per-service — "
-                "check the destination user's password / that the user exists and is unlocked in "
-                "the destination's sap-client. Not a missing record. Further calls are being "
-                f"briefly held off ({_AUTH_COOLDOWN_SECONDS:.0f}s) to avoid piling on more failed "
-                "logons against the tenant (a lockout policy can turn a bad password into a "
-                "locked account)."
+                f"credentials were rejected (logon failed) for {service_name!r}. On this tenant that "
+                "has repeatedly turned out to be THIS SPECIFIC SERVICE needing a different SAP client "
+                f"(see _SAP_CLIENT_OVERRIDE — confirm via {service_name}/$metadata?sap-client=NNN), "
+                "rather than the destination's credentials being globally wrong — check that first. "
+                "Not a missing record. Further calls to this service are being briefly held off "
+                f"({_AUTH_COOLDOWN_SECONDS:.0f}s) to avoid piling on more failed logons (a lockout "
+                "policy can turn a bad password into a locked account); other services are unaffected."
             )
         if resp.status_code == 403:
             logger.error("S/4HANA 403 on %s — %r destination user not authorised for this service (body=%s)",
@@ -1469,17 +1621,7 @@ class S4HANAClient:
             return None
         if not items:
             return None
-
-        net = 0.0
-        currency = None
-        for it in items:
-            amt = _num(it.get("AmountInCompanyCodeCurrency"))
-            if amt is None:
-                continue
-            if str(it.get("DebitCreditCode")).strip().upper() in ("H", "2", "C"):
-                amt = -amt
-            net += amt
-            currency = currency or it.get("CompanyCodeCurrency")
+        net, currency = self._net_posted_amount(items)
         return {
             "costObjectType": cost_object_type,
             "costObject": cost_object_id,
@@ -1494,6 +1636,269 @@ class S4HANAClient:
                 f"truncated if there are more than {top} postings."
             ),
         }
+
+    @staticmethod
+    def _net_posted_amount(items: list[dict]) -> tuple[float, str | None]:
+        """Sum ``AmountInCompanyCodeCurrency`` across journal-entry line items,
+        debits positive / credits negative, and the first currency seen."""
+        net = 0.0
+        currency = None
+        for it in items:
+            amt = _num(it.get("AmountInCompanyCodeCurrency"))
+            if amt is None:
+                continue
+            if str(it.get("DebitCreditCode")).strip().upper() in ("H", "2", "C"):
+                amt = -amt
+            net += amt
+            currency = currency or it.get("CompanyCodeCurrency")
+        return net, currency
+
+    def get_gl_account_activity(
+        self, company_code: str, gl_account: str, fiscal_year: str | None = None, *, top: int = 200
+    ) -> dict | None:
+        """Net POSTED amount on a G/L account in a company code, computed from
+        journal-entry line items — the same live posting data
+        :meth:`get_cost_object_actuals` uses, filtered by G/L account instead
+        of a cost object.
+
+        This is a computed sum of postings in scope, NOT an official
+        trial-balance / period-end account balance (no carry-forward, no
+        period restriction beyond the optional fiscal year, no reversal
+        netting beyond debit/credit sign). For a real balance, point the user
+        at the G/L balance report. Returns ``None`` when no postings are found
+        or the lookup fails — a graceful miss, not an error.
+        """
+        filt = f"GLAccount eq {_lit(gl_account)} and CompanyCode eq {_lit(company_code)}"
+        if fiscal_year:
+            filt += f" and FiscalYear eq {_lit(fiscal_year)}"
+        try:
+            items = self._capability_query("journal_entry_item", select=_ACTUALS_SELECT, filt=filt, top=top)
+        except S4HANAError as exc:
+            logger.info("G/L account activity unavailable for %s/%s: %s", company_code, gl_account, exc)
+            return None
+        if not items:
+            return None
+        net, currency = self._net_posted_amount(items)
+        return {
+            "glAccount": gl_account,
+            "companyCode": company_code,
+            "fiscalYear": fiscal_year,
+            "netPostedAmount": _round(net, 2),
+            "currency": currency,
+            "postingCount": len(items),
+            "note": (
+                "Net posted amount from FI/CO line items on this G/L account (debits "
+                "minus credits, company-code currency) — a computed sum of postings in "
+                "scope, NOT an official trial-balance / period-end balance figure. For "
+                "that, use the G/L balance report."
+            ),
+        }
+
+    # Cap on postings scanned for the AP/AR open-items summaries below. Matches
+    # the hard ceiling _query() already applies to every capability query (see
+    # its `min(top, 50)`) — passing a higher number here would silently be
+    # truncated to 50 anyway, so this is the true, honest limit, not an
+    # aspirational one. A company code with more than 50 open items will be
+    # under-counted; the "note" on both summaries says so explicitly.
+    _OPEN_ITEMS_TOP = 50
+
+    def get_accounts_payable_summary(
+        self, company_code: str, vendor: str | None = None, fiscal_year: str | None = None,
+    ) -> dict:
+        """Computed, best-effort AP OPEN ITEMS summary for a company code
+        (optionally scoped to one vendor): count and net amount of vendor
+        subledger line items with no clearing date yet, from the same live
+        journal-entry cube :meth:`get_gl_account_activity` /
+        :meth:`get_cost_object_actuals` already use in production.
+
+        This answers "how much do we owe" / "how many open vendor items"
+        style portfolio questions — as opposed to every other AP tool here,
+        which needs a specific invoice number. It is NOT an official AP aging
+        report (no day-based buckets, no partial-clearing netting beyond
+        debit/credit sign) and is capped at the most recent
+        :data:`_OPEN_ITEMS_TOP` postings — point the user at the AP aging
+        report / FBL1N for a definitive, complete figure.
+
+        The "Supplier" field this relies on is CONFIRMED present on this
+        tenant (already used by :meth:`get_payment_clearing_status`), so
+        unlike the AR counterpart this does not need to detect a missing
+        field — a connection failure here is a genuine S4HANAError.
+        """
+        filt = f"CompanyCode eq {_lit(company_code)}"
+        if vendor:
+            filt += f" and Supplier eq {_lit(vendor)}"
+        if fiscal_year:
+            filt += f" and FiscalYear eq {_lit(fiscal_year)}"
+        try:
+            items = self._capability_query(
+                "journal_entry_item", select=_OPEN_ITEMS_SELECT, filt=filt,
+                top=self._OPEN_ITEMS_TOP, orderby="PostingDate desc",
+            )
+        except S4HANAError as exc:
+            return {
+                "companyCode": company_code, "vendor": vendor, "fiscalYear": fiscal_year,
+                "connected": False, "openItemCount": None, "netOpenAmount": None,
+                "message": f"AP open-items lookup is not available on this system: {exc}",
+            }
+        vendor_lines = [it for it in items if _is_set(it.get("Supplier"))]
+        open_lines = [it for it in vendor_lines if not _is_set(it.get("ClearingDate"))]
+        net, currency = self._net_posted_amount(open_lines)
+        return {
+            "companyCode": company_code,
+            "vendor": vendor,
+            "fiscalYear": fiscal_year,
+            "connected": True,
+            "openItemCount": len(open_lines),
+            # _net_posted_amount is debits-positive / credits-negative; a vendor
+            # payable is booked as a credit, so the raw net is negative — flip
+            # the sign so a positive number here reads naturally as "we owe".
+            # Standard double-entry convention, not independently verified
+            # against a known invoice on this tenant — sanity-check against
+            # FBL1N before treating the figure as authoritative.
+            "netOpenAmount": _round(-net, 2) if open_lines else 0.0,
+            "currency": currency,
+            "postingsScanned": len(items),
+            "note": (
+                f"Computed from up to {self._OPEN_ITEMS_TOP} of the most recent postings "
+                "in scope — NOT an official AP aging report (no day-based aging buckets, "
+                "no dispute status). If there are more open items than that, this "
+                "under-counts. Point to the AP aging report / FBL1N for a definitive figure."
+            ),
+        }
+
+    def get_accounts_receivable_summary(
+        self, company_code: str, customer: str | None = None, fiscal_year: str | None = None,
+    ) -> dict:
+        """Computed, best-effort AR OPEN ITEMS summary — the customer-side
+        mirror of :meth:`get_accounts_payable_summary`, same cube, same
+        caveats (no aging buckets, capped postings, sign convention not
+        independently verified).
+
+        UNLIKE the AP side, whether this tenant's journal-entry cube even
+        exposes a "Customer" field is UNCONFIRMED (see the ``_OPEN_ITEMS_SELECT``
+        comment) — accounts_receivable is still listed ``kb_only`` in
+        :mod:`ahf_finance_agent.domains` for exactly this reason. This method
+        detects the field's absence at runtime (every returned row simply
+        lacking a "Customer" key) and reports AR as not connected rather than
+        a confident, possibly-fabricated zero.
+        """
+        filt = f"CompanyCode eq {_lit(company_code)}"
+        if customer:
+            filt += f" and Customer eq {_lit(customer)}"
+        if fiscal_year:
+            filt += f" and FiscalYear eq {_lit(fiscal_year)}"
+        try:
+            items = self._capability_query(
+                "journal_entry_item", select=_OPEN_ITEMS_SELECT, filt=filt,
+                top=self._OPEN_ITEMS_TOP, orderby="PostingDate desc",
+            )
+        except S4HANAError as exc:
+            return {
+                "companyCode": company_code, "customer": customer, "fiscalYear": fiscal_year,
+                "connected": False, "openItemCount": None, "netOpenAmount": None,
+                "message": f"AR open-items lookup is not available on this system: {exc}",
+            }
+        if not items:
+            # Ambiguous on purpose: with Customer unconfirmed, an empty result
+            # could mean "no open receivables" or "this cube doesn't model AR
+            # here at all" — we can't tell which without at least one row to
+            # inspect. Report inconclusive rather than assert a confident zero
+            # (the same silent-fabrication risk the missing-Customer-field
+            # branch below exists to avoid).
+            return {
+                "companyCode": company_code, "customer": customer, "fiscalYear": fiscal_year,
+                "connected": None, "openItemCount": None, "netOpenAmount": None,
+                "message": (
+                    "No postings matched, so there is nothing to sum — but this tenant's "
+                    "Customer-field support is unconfirmed, so this doesn't reliably tell "
+                    "'no open receivables' apart from 'AR isn't modelled on this cube "
+                    "here'. Treat as inconclusive; use the AR aging report (FBL5N) or "
+                    "search_policy_docs for the process side."
+                ),
+            }
+        if not any("Customer" in it for it in items):
+            return {
+                "companyCode": company_code, "customer": customer, "fiscalYear": fiscal_year,
+                "connected": False, "openItemCount": None, "netOpenAmount": None,
+                "message": (
+                    "This tenant's journal-entry service does not expose a Customer "
+                    "field, so a live AR summary can't be computed here — there is no "
+                    "other connected AR data source. Point the user to Accounts "
+                    "Receivable / the customer line-item report (FBL5N)."
+                ),
+            }
+        customer_lines = [it for it in items if _is_set(it.get("Customer"))]
+        open_lines = [it for it in customer_lines if not _is_set(it.get("ClearingDate"))]
+        net, currency = self._net_posted_amount(open_lines)
+        return {
+            "companyCode": company_code,
+            "customer": customer,
+            "fiscalYear": fiscal_year,
+            "connected": True,
+            "openItemCount": len(open_lines),
+            # A receivable is booked as a debit to the customer account, so
+            # (unlike AP) the raw net_posted_amount sign already reads as
+            # positive = "customer owes us" — see the AP method's sign note.
+            "netOpenAmount": _round(net, 2) if open_lines else 0.0,
+            "currency": currency,
+            "postingsScanned": len(items),
+            "note": (
+                f"Computed from up to {self._OPEN_ITEMS_TOP} of the most recent postings "
+                "in scope — NOT an official AR aging report (no day-based aging buckets, "
+                "no dispute/dunning status). This tenant's Customer-field support is "
+                "unconfirmed; sanity-check against FBL5N before relying on this figure. "
+                "If there are more open items than scanned, this under-counts."
+            ),
+        }
+
+    def get_company_code_details(self, company_code: str) -> dict | None:
+        """Company code master data: name, country, currency, chart of
+        accounts, fiscal year variant."""
+        return self._capability_entity("company_code", _lit(company_code), _CC_SELECT)
+
+    def get_cost_center_details(self, cost_center: str, controlling_area: str | None = None) -> dict | None:
+        """Cost centre master data — validity, responsible person, category,
+        assigned profit centre and company code. This is MASTER DATA (who owns
+        it, is it still valid), distinct from :meth:`get_cost_object_actuals`
+        (live postings against it). Returns the most recent match if more than
+        one validity period is on file."""
+        filt = f"CostCenter eq {_lit(cost_center)}"
+        if controlling_area:
+            filt += f" and ControllingArea eq {_lit(controlling_area)}"
+        rows = self._capability_query("cost_center", select=_COST_CENTER_SELECT, filt=filt, top=5)
+        if not rows:
+            return None
+        cc = rows[0]
+        cc["isCurrentlyValid"] = _is_currently_valid(cc.get("ValidityStartDate"), cc.get("ValidityEndDate"))
+        return cc
+
+    def get_profit_center_details(self, profit_center: str, controlling_area: str | None = None) -> dict | None:
+        """Profit centre master data — validity, responsible person, segment,
+        block status."""
+        filt = f"ProfitCenter eq {_lit(profit_center)}"
+        if controlling_area:
+            filt += f" and ControllingArea eq {_lit(controlling_area)}"
+        rows = self._capability_query("profit_center", select=_PROFIT_CENTER_SELECT, filt=filt, top=5)
+        if not rows:
+            return None
+        pc = rows[0]
+        blocked = pc.get("ProfitCenterIsBlocked")
+        pc["isCurrentlyValid"] = (
+            False if _truthy(blocked)
+            else _is_currently_valid(pc.get("ValidityStartDate"), pc.get("ValidityEndDate"))
+        )
+        return pc
+
+    def get_gl_account_master(self, gl_account: str, chart_of_accounts: str | None = None) -> dict | None:
+        """G/L account master data — account group, balance-sheet vs P&L
+        classification, posting/planning block status, short description. This
+        is what the account IS, not its balance — for postings, use
+        :meth:`get_gl_account_activity`."""
+        filt = f"GLAccount eq {_lit(gl_account)}"
+        if chart_of_accounts:
+            filt += f" and ChartOfAccounts eq {_lit(chart_of_accounts)}"
+        rows = self._capability_query("gl_account_master", select=_GL_MASTER_SELECT, filt=filt, top=5)
+        return rows[0] if rows else None
 
     def _po_commitment_value(self, purchase_order: str) -> dict | None:
         """The PO's own committed value — sum of its line items' net value

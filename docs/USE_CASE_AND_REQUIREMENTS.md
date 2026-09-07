@@ -163,7 +163,12 @@ Live read-only lookups: supplier invoice (header + line items), payment/clearing
 (by FI document, and by invoice number via `get_invoice_payment_status`, which
 resolves the FI document itself), PO (status + release/approval + line items + delivery schedule),
 goods receipts against a PO, a computed PO-GR-invoice 3-way match
-(`check_three_way_match`), PR, vendor.
+(`check_three_way_match`), PR, vendor (incl. the two deliberate PII exceptions —
+vendor email and vendor bank account), budget status (always `budgetAvailable:
+false` on this tenant, but with computed `actualSpend`/`commitmentValue`),
+company code / cost centre / profit centre / G/L account master data, and
+computed G/L account posting activity (`get_gl_account_activity` — not an
+official balance).
 Still knowledge-base-only within procure-to-pay: the dedicated PO
 approval-workflow service (`API_PURCHASE_ORDER_APPROVAL_SRV` — release state is
 read off the PO API for now), the formal match / block-release workflow history

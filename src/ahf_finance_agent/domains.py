@@ -41,12 +41,14 @@ FINANCE_DOMAINS: tuple[FinanceDomain, ...] = (
         name="Accounts Payable",
         sap_area="FI-AP",
         status="live",
-        odata_services=("API_SUPPLIERINVOICE_PROCESS_SRV", "API_SUPPLIER_INVOICE_ITEM_SRV"),
+        odata_services=("API_SUPPLIERINVOICE_PROCESS_SRV", "API_SUPPLIER_INVOICE_ITEM_SRV", "API_OPLACCTGDOCITEMCUBE_SRV"),
         example_questions=(
             "What's the status of invoice 5105601234?",
             "Is invoice 5105601234 blocked for payment, and why?",
             "What are the line items on invoice 5105601234?",
             "Show me recent invoices from vendor 100000.",
+            "What's our total accounts payable for company code 1710?",
+            "How much do we currently owe vendor 100000?",
             "What are our standard supplier payment terms?",
         ),
         kb_docs=("invoice_payment_terms.md",),
@@ -137,13 +139,13 @@ FINANCE_DOMAINS: tuple[FinanceDomain, ...] = (
         key="general_ledger",
         name="General Ledger / Journal Entries & G/L postings",
         sap_area="FI-GL",
-        status="kb_only",
-        odata_services=("API_JOURNALENTRYITEMBASIC_SRV", "API_GLACCOUNTLINEITEM"),
+        status="live",
+        odata_services=("API_OPLACCTGDOCITEMCUBE_SRV", "API_JOURNALENTRYITEMBASIC_SRV", "API_COMPANYCODE_SRV"),
         example_questions=(
             "How do I request a new G/L account?",
             "When does the accounting period close each month?",
             "What's the policy for parking vs posting a journal entry?",
-            "Who can post a manual journal entry?",
+            "What currency and chart of accounts does company code 1710 use?",
         ),
         kb_docs=("general_ledger_and_journal_entries.md",),
     ),
@@ -151,10 +153,14 @@ FINANCE_DOMAINS: tuple[FinanceDomain, ...] = (
         key="gl_accounts_balances",
         name="G/L Accounts & Balances",
         sap_area="FI-GL",
-        status="kb_only",
-        odata_services=("API_GLACCOUNTLINEITEM", "API_GLACCTBALANCE_SRV"),
+        status="live",
+        # get_gl_account_activity computes a posting total from journal_entry_item
+        # (NOT an official trial-balance figure); get_gl_account_master gives the
+        # account's classification (balance-sheet vs P&L, account group).
+        odata_services=("API_OPLACCTGDOCITEMCUBE_SRV", "API_GLACCOUNTINCHARTOFACCOUNTS_SRV"),
         example_questions=(
             "What is the balance on G/L account 400000 for company code 1710?",
+            "Is G/L account 400000 a balance sheet or P&L account?",
             "How do I read the trial balance report?",
         ),
         kb_docs=("general_ledger_and_journal_entries.md",),
@@ -163,6 +169,13 @@ FINANCE_DOMAINS: tuple[FinanceDomain, ...] = (
         key="accounts_receivable",
         name="Accounts Receivable",
         sap_area="FI-AR",
+        # Stays kb_only: get_accounts_receivable_summary exists and rides the
+        # already-connected API_OPLACCTGDOCITEMCUBE_SRV, but whether that cube
+        # exposes a Customer field on THIS tenant is unconfirmed, so it reports
+        # connected=false/inconclusive rather than a live figure until that's
+        # checked. API_CUSTOMER_INVOICE_SRV (customer-invoice-level detail,
+        # dunning status) isn't connected at all. Flip to "live" once either is
+        # confirmed working — see the AP/API list handed to the connectivity team.
         status="kb_only",
         odata_services=("API_CUSTOMER_INVOICE_SRV", "API_OPLACCTGDOCITEMCUBE_SRV"),
         example_questions=(
@@ -170,6 +183,7 @@ FINANCE_DOMAINS: tuple[FinanceDomain, ...] = (
             "What is our dunning / collections process?",
             "When do we write off a bad debt?",
             "What are standard customer payment terms?",
+            "What's our total accounts receivable for company code 1710?",
         ),
         kb_docs=("accounts_receivable.md",),
     ),
@@ -177,12 +191,13 @@ FINANCE_DOMAINS: tuple[FinanceDomain, ...] = (
         key="cost_centers",
         name="Cost Centers (CO-CCA)",
         sap_area="CO-CCA",
-        status="kb_only",
+        status="live",
         odata_services=("API_COSTCENTER_SRV",),
         example_questions=(
             "How do I request a new cost center?",
-            "How are shared costs allocated between cost centers?",
-            "Which cost center owns spend for the marketing team?",
+            "Who is responsible for cost centre 1000?",
+            "Is cost centre 1000 still valid, and what profit centre is it assigned to?",
+            "How much has been spent on cost centre 1000 this fiscal year?",
         ),
         kb_docs=("cost_and_profit_centers.md",),
     ),
@@ -190,11 +205,12 @@ FINANCE_DOMAINS: tuple[FinanceDomain, ...] = (
         key="profit_centers",
         name="Profit Centers (CO-PCA)",
         sap_area="CO-PCA",
-        status="kb_only",
+        status="live",
         odata_services=("API_PROFITCENTER_SRV",),
         example_questions=(
             "How do I request a new profit center?",
             "What's the difference between a cost center and a profit center here?",
+            "Is profit centre 1000 still valid, and what's its description?",
         ),
         kb_docs=("cost_and_profit_centers.md",),
     ),

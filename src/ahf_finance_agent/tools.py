@@ -160,6 +160,40 @@ def _get_budget_status(c: S4HANAClient, a: dict) -> ToolOutcome:
     return ToolOutcome(result, grounded=grounded)
 
 
+def _get_company_code_details(c: S4HANAClient, a: dict) -> ToolOutcome:
+    return _record(c.get_company_code_details(_req(a, "company_code")))
+
+
+def _get_cost_center_details(c: S4HANAClient, a: dict) -> ToolOutcome:
+    return _record(c.get_cost_center_details(_req(a, "cost_center"), a.get("controlling_area") or None))
+
+
+def _get_profit_center_details(c: S4HANAClient, a: dict) -> ToolOutcome:
+    return _record(c.get_profit_center_details(_req(a, "profit_center"), a.get("controlling_area") or None))
+
+
+def _get_gl_account_master(c: S4HANAClient, a: dict) -> ToolOutcome:
+    return _record(c.get_gl_account_master(_req(a, "gl_account"), a.get("chart_of_accounts") or None))
+
+
+def _get_gl_account_activity(c: S4HANAClient, a: dict) -> ToolOutcome:
+    return _record(c.get_gl_account_activity(_req(a, "company_code"), _req(a, "gl_account"), a.get("fiscal_year") or None))
+
+
+def _get_accounts_payable_summary(c: S4HANAClient, a: dict) -> ToolOutcome:
+    result = c.get_accounts_payable_summary(
+        _req(a, "company_code"), a.get("vendor") or None, a.get("fiscal_year") or None
+    )
+    return ToolOutcome(result, grounded=bool(result.get("connected")))
+
+
+def _get_accounts_receivable_summary(c: S4HANAClient, a: dict) -> ToolOutcome:
+    result = c.get_accounts_receivable_summary(
+        _req(a, "company_code"), a.get("customer") or None, a.get("fiscal_year") or None
+    )
+    return ToolOutcome(result, grounded=bool(result.get("connected")))
+
+
 _HANDLERS: dict[str, Callable[[S4HANAClient, dict], ToolOutcome]] = {
     "get_invoice_status": _get_invoice_status,
     "get_invoice_items": _get_invoice_items,
@@ -177,6 +211,13 @@ _HANDLERS: dict[str, Callable[[S4HANAClient, dict], ToolOutcome]] = {
     "get_vendor_email_addresses": _get_vendor_email_addresses,
     "get_vendor_bank_accounts": _get_vendor_bank_accounts,
     "get_budget_status": _get_budget_status,
+    "get_company_code_details": _get_company_code_details,
+    "get_cost_center_details": _get_cost_center_details,
+    "get_profit_center_details": _get_profit_center_details,
+    "get_gl_account_master": _get_gl_account_master,
+    "get_gl_account_activity": _get_gl_account_activity,
+    "get_accounts_payable_summary": _get_accounts_payable_summary,
+    "get_accounts_receivable_summary": _get_accounts_receivable_summary,
 }
 
 
@@ -419,6 +460,112 @@ TOOL_SPECS: list[dict] = [
             "fiscal_year": {"type": "string", "description": "Optional 4-digit fiscal year."},
         },
         ["cost_object_type", "cost_object_id"],
+    ),
+    _fn(
+        "get_company_code_details",
+        "Look up a SAP S/4HANA company code's master data: name, country, city, "
+        "currency, chart of accounts, fiscal year variant. Use for 'what currency "
+        "is company code X in', 'what chart of accounts does CC X use', 'what "
+        "fiscal year variant is company code X on'.",
+        {"company_code": {"type": "string", "description": "Company code, e.g. 1710"}},
+        ["company_code"],
+    ),
+    _fn(
+        "get_cost_center_details",
+        "Look up a SAP S/4HANA cost centre's MASTER DATA: validity period, "
+        "responsible person, category, assigned profit centre and company code. "
+        "Returns isCurrentlyValid (true/false/null) — use that directly for 'is "
+        "cost centre X still active/valid', don't compute it yourself from the "
+        "raw validity dates. This is who owns it / is it valid — for live spend "
+        "against it, use get_budget_status or the actual-spend figure it returns "
+        "instead. Use for 'who is responsible for cost centre X', 'what profit "
+        "centre is cost centre X assigned to'.",
+        {
+            "cost_center": {"type": "string", "description": "Cost centre number, e.g. 1000"},
+            "controlling_area": {"type": "string", "description": "Optional controlling area, if the user gives one."},
+        },
+        ["cost_center"],
+    ),
+    _fn(
+        "get_profit_center_details",
+        "Look up a SAP S/4HANA profit centre's master data: responsible person, "
+        "segment, block status, validity period. Returns isCurrentlyValid "
+        "(true/false/null, already accounting for both the block flag and the "
+        "validity dates) — use that directly for 'is profit centre X still "
+        "valid', don't compute it yourself from the raw fields. Use for 'what is "
+        "profit centre X', 'who is responsible for profit centre X'.",
+        {
+            "profit_center": {"type": "string", "description": "Profit centre number, e.g. 1000"},
+            "controlling_area": {"type": "string", "description": "Optional controlling area, if the user gives one."},
+        },
+        ["profit_center"],
+    ),
+    _fn(
+        "get_gl_account_master",
+        "Look up a SAP S/4HANA G/L account's MASTER DATA: account group, whether "
+        "it's a balance-sheet or P&L account, posting/planning block status, short "
+        "description. This is what the account IS, not its balance — for postings, "
+        "use get_gl_account_activity. Use for 'what is G/L account X', 'is G/L "
+        "account X a balance sheet or P&L account'.",
+        {
+            "gl_account": {"type": "string", "description": "G/L account number, e.g. 400000"},
+            "chart_of_accounts": {"type": "string", "description": "Optional chart of accounts, if the user gives one."},
+        },
+        ["gl_account"],
+    ),
+    _fn(
+        "get_gl_account_activity",
+        "Net posted amount on a G/L account in a company code, computed from live "
+        "journal-entry line items (debits minus credits). This is a COMPUTED sum of "
+        "postings in scope, NOT an official trial-balance / period-end account "
+        "balance (no carry-forward). For 'what is the balance on G/L account X', "
+        "give this figure but be clear it's a computed posting total, not an "
+        "official balance, and point to the G/L balance report for that. Needs "
+        "both company_code and gl_account.",
+        {
+            "company_code": {"type": "string", "description": "Company code, e.g. 1710"},
+            "gl_account": {"type": "string", "description": "G/L account number, e.g. 400000"},
+            "fiscal_year": {"type": "string", "description": "Optional 4-digit fiscal year."},
+        },
+        ["company_code", "gl_account"],
+    ),
+    _fn(
+        "get_accounts_payable_summary",
+        "PORTFOLIO-level AP question — use this for 'how much do we owe', 'what's "
+        "our total accounts payable', 'how many open vendor invoices are there' "
+        "for a company code (optionally one vendor), as opposed to every other AP "
+        "tool here which needs one specific invoice number. Computes open (not yet "
+        "cleared) vendor-subledger postings from live data: openItemCount and "
+        "netOpenAmount (positive = amount owed). NOT an official AP aging report — "
+        "no day-based aging buckets, capped at the most recent ~50 postings scanned "
+        "(under-counts if there are more). Always relay the note verbatim and point "
+        "to the AP aging report / FBL1N for a definitive figure — treat this as "
+        "directional, not final.",
+        {
+            "company_code": {"type": "string", "description": "Company code, e.g. 1710"},
+            "vendor": {"type": "string", "description": "Optional supplier/vendor number to scope to one vendor."},
+            "fiscal_year": {"type": "string", "description": "Optional 4-digit fiscal year."},
+        },
+        ["company_code"],
+    ),
+    _fn(
+        "get_accounts_receivable_summary",
+        "PORTFOLIO-level AR question — use this for 'how much are we owed', "
+        "'what's our total accounts receivable / outstanding balance', 'how many "
+        "open customer invoices are there' for a company code (optionally one "
+        "customer). Mirrors get_accounts_payable_summary but for the customer "
+        "subledger, and may report connected=false: this tenant's live AR field "
+        "support is NOT confirmed the way AP is, so a not-connected result is "
+        "expected and should be relayed honestly (fall back to search_policy_docs "
+        "for AR policy/process and hand off for the live figure), not treated as a "
+        "tool error. When connected=true, same caveats as the AP version apply: "
+        "not an official aging report, capped at ~50 postings, treat as directional.",
+        {
+            "company_code": {"type": "string", "description": "Company code, e.g. 1710"},
+            "customer": {"type": "string", "description": "Optional customer number to scope to one customer."},
+            "fiscal_year": {"type": "string", "description": "Optional 4-digit fiscal year."},
+        },
+        ["company_code"],
     ),
 ]
 

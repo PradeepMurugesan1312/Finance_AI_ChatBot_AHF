@@ -28,6 +28,13 @@ def test_specs_and_handlers_are_in_lockstep():
         "get_vendor_email_addresses",
         "get_vendor_bank_accounts",
         "get_budget_status",
+        "get_company_code_details",
+        "get_cost_center_details",
+        "get_profit_center_details",
+        "get_gl_account_master",
+        "get_gl_account_activity",
+        "get_accounts_payable_summary",
+        "get_accounts_receivable_summary",
     }
     assert spec_names == set(TOOL_NAMES) | {"search_policy_docs"}
 
@@ -298,6 +305,91 @@ def test_dispatch_budget_status_grounded_when_actual_spend_computed():
     assert outcome.grounded is True
     assert outcome.content["budgetAvailable"] is False  # still true -- only actualSpend is real
     assert outcome.content["actualSpend"]["netPostedAmount"] == 3800.0
+
+
+def test_dispatch_company_code_details():
+    s4 = FakeS4HANAClient(get_company_code_details={"CompanyCode": "1710", "Currency": "USD"})
+    outcome = dispatch_tool("get_company_code_details", '{"company_code": "1710"}', s4)
+    assert s4.calls == [("get_company_code_details", ("1710",), {})]
+    assert outcome.grounded is True
+    assert outcome.content["record"]["Currency"] == "USD"
+
+
+def test_dispatch_cost_center_details_with_optional_controlling_area():
+    s4 = FakeS4HANAClient(get_cost_center_details={"CostCenter": "1000", "PersonResponsible": "BPINST"})
+    outcome = dispatch_tool(
+        "get_cost_center_details", '{"cost_center": "1000", "controlling_area": "1710"}', s4
+    )
+    assert s4.calls == [("get_cost_center_details", ("1000", "1710"), {})]
+    assert outcome.grounded is True
+
+
+def test_dispatch_profit_center_details():
+    s4 = FakeS4HANAClient(get_profit_center_details=None)
+    outcome = dispatch_tool("get_profit_center_details", '{"profit_center": "YB100"}', s4)
+    assert s4.calls == [("get_profit_center_details", ("YB100", None), {})]
+    assert outcome.grounded is False
+    assert outcome.content["found"] is False
+
+
+def test_dispatch_gl_account_master():
+    s4 = FakeS4HANAClient(get_gl_account_master={"GLAccount": "400000", "IsBalanceSheetAccount": False})
+    outcome = dispatch_tool("get_gl_account_master", '{"gl_account": "400000"}', s4)
+    assert s4.calls == [("get_gl_account_master", ("400000", None), {})]
+    assert outcome.grounded is True
+
+
+def test_dispatch_gl_account_activity_requires_company_code_and_gl_account():
+    s4 = FakeS4HANAClient(get_gl_account_activity={"glAccount": "400000", "netPostedAmount": 7500.0})
+    ok = dispatch_tool(
+        "get_gl_account_activity", '{"company_code": "1710", "gl_account": "400000"}', s4
+    )
+    assert s4.calls == [("get_gl_account_activity", ("1710", "400000", None), {})]
+    assert ok.grounded is True
+    assert ok.content["record"]["netPostedAmount"] == 7500.0
+
+    s4b = FakeS4HANAClient()
+    missing = dispatch_tool("get_gl_account_activity", '{"gl_account": "400000"}', s4b)  # no company_code
+    assert missing.grounded is False
+    assert "company_code" in missing.content["error"]
+    assert s4b.calls == []
+
+
+def test_dispatch_accounts_payable_summary():
+    s4 = FakeS4HANAClient(
+        get_accounts_payable_summary={"connected": True, "openItemCount": 3, "netOpenAmount": 4200.0}
+    )
+    outcome = dispatch_tool(
+        "get_accounts_payable_summary", '{"company_code": "1710", "vendor": "100000"}', s4
+    )
+    assert s4.calls == [("get_accounts_payable_summary", ("1710", "100000", None), {})]
+    assert outcome.grounded is True
+    assert outcome.content["openItemCount"] == 3
+
+    s4b = FakeS4HANAClient()
+    missing = dispatch_tool("get_accounts_payable_summary", "{}", s4b)  # no company_code
+    assert missing.grounded is False
+    assert "company_code" in missing.content["error"]
+    assert s4b.calls == []
+
+
+def test_dispatch_accounts_receivable_summary_not_connected_is_not_grounded():
+    s4 = FakeS4HANAClient(get_accounts_receivable_summary={"connected": False, "message": "not available"})
+    outcome = dispatch_tool("get_accounts_receivable_summary", '{"company_code": "1710"}', s4)
+    assert s4.calls == [("get_accounts_receivable_summary", ("1710", None, None), {})]
+    assert outcome.grounded is False
+    assert outcome.content["connected"] is False
+
+
+def test_dispatch_accounts_receivable_summary_connected_is_grounded():
+    s4 = FakeS4HANAClient(
+        get_accounts_receivable_summary={"connected": True, "openItemCount": 1, "netOpenAmount": 900.0}
+    )
+    outcome = dispatch_tool(
+        "get_accounts_receivable_summary", '{"company_code": "1710", "customer": "200000"}', s4
+    )
+    assert s4.calls == [("get_accounts_receivable_summary", ("1710", "200000", None), {})]
+    assert outcome.grounded is True
 
 
 def test_unknown_tool_is_reported():

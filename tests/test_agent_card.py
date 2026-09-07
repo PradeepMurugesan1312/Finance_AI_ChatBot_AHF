@@ -1,16 +1,12 @@
 from __future__ import annotations
 
 from ahf_finance_agent.agent_card import get_agent_card
+from ahf_finance_agent.tools import POLICY_TOOL_NAME, TOOL_NAMES
 
-REQUIRED_SKILL_IDS = {
-    "get_invoice_status",
-    "search_invoices_by_vendor",
-    "get_payment_clearing_status",
-    "get_purchase_order_status",
-    "get_purchase_requisition_status",
-    "get_vendor_details",
-    "search_policy_docs",
-}
+# Derived from tools.py, not hardcoded: a hardcoded list here is exactly what
+# let the agent card drift silently (it advertised 6 tools while tools.py grew
+# to 20+, so Joule couldn't route to several already-working S/4HANA lookups).
+REQUIRED_SKILL_IDS = TOOL_NAMES | {POLICY_TOOL_NAME}
 
 
 def test_agent_card_has_all_in_scope_skills():

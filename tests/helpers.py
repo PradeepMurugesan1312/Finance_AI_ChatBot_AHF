@@ -154,3 +154,24 @@ class FakeS4HANAClient:
 
     def get_budget_status(self, *a, **k):
         return self._canned("get_budget_status", *a, **k) or {"budgetAvailable": False}
+
+    def get_company_code_details(self, *a, **k):
+        return self._canned("get_company_code_details", *a, **k)
+
+    def get_cost_center_details(self, *a, **k):
+        return self._canned("get_cost_center_details", *a, **k)
+
+    def get_profit_center_details(self, *a, **k):
+        return self._canned("get_profit_center_details", *a, **k)
+
+    def get_gl_account_master(self, *a, **k):
+        return self._canned("get_gl_account_master", *a, **k)
+
+    def get_gl_account_activity(self, *a, **k):
+        return self._canned("get_gl_account_activity", *a, **k)
+
+    def get_accounts_payable_summary(self, *a, **k):
+        return self._canned("get_accounts_payable_summary", *a, **k) or {"connected": False}
+
+    def get_accounts_receivable_summary(self, *a, **k):
+        return self._canned("get_accounts_receivable_summary", *a, **k) or {"connected": False}
