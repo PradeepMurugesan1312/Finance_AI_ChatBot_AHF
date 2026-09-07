@@ -169,21 +169,22 @@ FINANCE_DOMAINS: tuple[FinanceDomain, ...] = (
         key="accounts_receivable",
         name="Accounts Receivable",
         sap_area="FI-AR",
-        # Stays kb_only: get_accounts_receivable_summary exists and rides the
-        # already-connected API_OPLACCTGDOCITEMCUBE_SRV, but whether that cube
-        # exposes a Customer field on THIS tenant is unconfirmed, so it reports
-        # connected=false/inconclusive rather than a live figure until that's
-        # checked. API_CUSTOMER_INVOICE_SRV (customer-invoice-level detail,
-        # dunning status) isn't connected at all. Flip to "live" once either is
-        # confirmed working — see the AP/API list handed to the connectivity team.
-        status="kb_only",
+        # CONFIRMED live (2026-09): get_accounts_receivable_summary, tested
+        # against this tenant post-deploy, returned a real open item for
+        # company code 1710 — the cube's Customer field IS modelled here after
+        # all. Portfolio summary only, though: API_CUSTOMER_INVOICE_SRV
+        # (single customer-invoice detail, dunning status) is still NOT
+        # connected — see the API list handed to the connectivity team. A
+        # specific "status of customer invoice X" question still has no live
+        # source and falls back to the knowledge base / handoff.
+        status="live",
         odata_services=("API_CUSTOMER_INVOICE_SRV", "API_OPLACCTGDOCITEMCUBE_SRV"),
         example_questions=(
-            "What's the status of customer invoice 9400001234?",
+            "What's our total accounts receivable for company code 1710?",
             "What is our dunning / collections process?",
             "When do we write off a bad debt?",
             "What are standard customer payment terms?",
-            "What's our total accounts receivable for company code 1710?",
+            "What's the status of customer invoice 9400001234?",
         ),
         kb_docs=("accounts_receivable.md",),
     ),

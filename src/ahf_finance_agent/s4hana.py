@@ -172,14 +172,14 @@ _ACTUALS_SELECT = (
 # instead of one cost object or G/L account. "Supplier" is CONFIRMED present
 # and populated on this tenant (it's already relied on in production by
 # get_payment_clearing_status / the FI-doc reference resolver). "Customer" is
-# NOT confirmed — this cube's underlying CDS view (the S/4HANA universal
-# journal) typically carries it alongside Supplier, but nobody has checked
-# this tenant's actual $metadata for it. If it isn't modelled here,
-# _select_get() silently drops it and every row simply lacks a "Customer" key
-# — get_accounts_receivable_summary() detects that (rather than quietly
-# reporting a wrong zero) and reports AR as not connected instead. Do not
-# remove that detection without confirming the field against a live
-# $metadata check first.
+# ALSO NOW CONFIRMED (2026-09, post-deploy live check against company code
+# 1710 via get_accounts_receivable_summary — it returned a real open item, not
+# an empty/dropped result) — this cube's underlying CDS view (the S/4HANA
+# universal journal) does carry it alongside Supplier on this tenant. The
+# runtime detection in get_accounts_receivable_summary (every row simply
+# lacking a "Customer" key => report not-connected instead of a fabricated
+# zero) is kept anyway as cheap insurance for a different tenant/build where
+# it might not hold — do not remove it on the strength of this one check.
 _OPEN_ITEMS_SELECT = (
     "CompanyCode", "FiscalYear", "AccountingDocument", "AccountingDocumentItem",
     "PostingDate", "DocumentDate", "AmountInCompanyCodeCurrency", "CompanyCodeCurrency",
@@ -1761,7 +1761,11 @@ class S4HANAClient:
             "note": (
                 f"Computed from up to {self._OPEN_ITEMS_TOP} of the most recent postings "
                 "in scope — NOT an official AP aging report (no day-based aging buckets, "
-                "no dispute status). If there are more open items than that, this "
+                "no dispute status). A negative figure can be genuine (e.g. debit memos "
+                "or partial reversals among the open items scanned), but the debit/credit "
+                "sign convention here has not been independently verified against a known "
+                "invoice on this tenant — if the sign looks surprising, say so rather than "
+                "asserting it confidently. If there are more open items than scanned, this "
                 "under-counts. Point to the AP aging report / FBL1N for a definitive figure."
             ),
         }
@@ -1774,13 +1778,14 @@ class S4HANAClient:
         caveats (no aging buckets, capped postings, sign convention not
         independently verified).
 
-        UNLIKE the AP side, whether this tenant's journal-entry cube even
-        exposes a "Customer" field is UNCONFIRMED (see the ``_OPEN_ITEMS_SELECT``
-        comment) — accounts_receivable is still listed ``kb_only`` in
-        :mod:`ahf_finance_agent.domains` for exactly this reason. This method
-        detects the field's absence at runtime (every returned row simply
-        lacking a "Customer" key) and reports AR as not connected rather than
-        a confident, possibly-fabricated zero.
+        The "Customer" field this needs is now CONFIRMED present on this
+        tenant (see the ``_OPEN_ITEMS_SELECT`` comment — a live post-deploy
+        check against company code 1710 returned a real open item). This
+        method still detects the field's absence at runtime (every returned
+        row simply lacking a "Customer" key) and reports AR as not connected
+        rather than a confident, possibly-fabricated zero — kept as cheap
+        insurance for a different tenant/build, not because this one is in
+        doubt any more.
         """
         filt = f"CompanyCode eq {_lit(company_code)}"
         if customer:
@@ -1845,9 +1850,10 @@ class S4HANAClient:
             "note": (
                 f"Computed from up to {self._OPEN_ITEMS_TOP} of the most recent postings "
                 "in scope — NOT an official AR aging report (no day-based aging buckets, "
-                "no dispute/dunning status). This tenant's Customer-field support is "
-                "unconfirmed; sanity-check against FBL5N before relying on this figure. "
-                "If there are more open items than scanned, this under-counts."
+                "no dispute/dunning status). The debit/credit sign convention has not been "
+                "independently verified against a known customer invoice on this tenant; "
+                "sanity-check against FBL5N before relying on this figure. If there are "
+                "more open items than scanned, this under-counts."
             ),
         }
 

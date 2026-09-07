@@ -41,5 +41,5 @@ def test_coverage_summary_partitions_all_domains():
     assert set(cov["live"]) == {
         "accounts_payable", "procurement", "goods_receipt", "vendor_master", "payments",
         "invoice_verification", "general_ledger", "gl_accounts_balances",
-        "cost_centers", "profit_centers",
+        "cost_centers", "profit_centers", "accounts_receivable",
     }
