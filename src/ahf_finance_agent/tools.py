@@ -767,14 +767,22 @@ TOOL_SPECS: list[dict] = [
     # (YYYY-MM-DD) instead for anything else the user names. Every date-range
     # and boolean filter behind these is a first use on this tenant — a
     # connected=false result may mean the assumption needs a live fix, not
-    # that the question has no answer.
+    # that the question has no answer. IMPORTANT: every one of these ALSO
+    # returns a capped sample of the actual matching record numbers (key
+    # named per tool, e.g. purchaseOrders/invoices/vendors — see each tool's
+    # description below) alongside the count. If the user follows up with
+    # 'list them' / 'which ones' / 'show me', answer from that sample
+    # directly (or call the same tool again) — do NOT say listing isn't
+    # possible; only say so if the sample list is genuinely empty.
     _fn(
         "count_purchase_orders",
         "Count of purchase orders matching a scope — 'how many POs were created "
         "last week', 'how many POs are pending approval right now', 'how many POs "
         "for vendor X this year'. vendor is a supplier NUMBER — if the user names a "
         "vendor, call search_vendors_by_name first to resolve it. pending_approval="
-        "true filters to POs whose release is not yet complete.",
+        "true filters to POs whose release is not yet complete. Response includes "
+        "purchaseOrders: a sample of up to 20 matching PO numbers — use it directly "
+        "if asked to list them.",
         {
             "period": {
                 "type": "string",
@@ -794,7 +802,8 @@ TOOL_SPECS: list[dict] = [
         "Count of purchase requisitions created in a date range — 'how many PRs "
         "were raised this month'. On this tenant the PR service may report "
         "connected=false (a known, pre-existing authorisation gap, not specific to "
-        "this count) — relay that plainly rather than implying zero.",
+        "this count) — relay that plainly rather than implying zero. Response "
+        "includes purchaseRequisitions: a sample of up to 20 matching PR numbers.",
         {
             "period": {
                 "type": "string",
@@ -813,7 +822,8 @@ TOOL_SPECS: list[dict] = [
         "payment'. Date range applies to posting date. Do NOT use this for 'how "
         "many invoices were posted in fiscal period N' — use "
         "count_invoices_by_fiscal_period for that (this tool has no fiscal-period "
-        "filter).",
+        "filter). Response includes invoices: a sample of up to 20 matching "
+        "{supplierInvoice, fiscalYear} pairs.",
         {
             "period": {
                 "type": "string",
@@ -833,7 +843,9 @@ TOOL_SPECS: list[dict] = [
         "Count of vendor invoices posted in a specific fiscal period — 'how many "
         "invoices were posted in fiscal period 5 for company code 1710, fiscal "
         "year 2017'. Needs all three of company_code, fiscal_year, fiscal_period "
-        "(no date-range shorthand here — fiscal periods aren't calendar months).",
+        "(no date-range shorthand here — fiscal periods aren't calendar months). "
+        "Response includes accountingDocuments: a sample of up to 20 matching "
+        "accounting document numbers.",
         {
             "company_code": {"type": "string", "description": "Company code, e.g. 1710"},
             "fiscal_year": {"type": "string", "description": "4-digit fiscal year, e.g. 2017"},
@@ -847,7 +859,9 @@ TOOL_SPECS: list[dict] = [
         "optionally for one PO — 'how many goods receipts were posted this week'. "
         "Does NOT filter to receipts against still-open POs — it counts every "
         "matching (non-cancelled) receipt regardless of the PO's completion "
-        "status; say so if the user's question implied that scoping.",
+        "status; say so if the user's question implied that scoping. Response "
+        "includes materialDocuments: a sample of up to 20 matching "
+        "{materialDocument, materialDocumentYear} pairs.",
         {
             "period": {
                 "type": "string",
@@ -868,7 +882,9 @@ TOOL_SPECS: list[dict] = [
         "tools (checks each sampled PO individually) and always returns a "
         "sample-based figure — relay scannedPurchaseOrders and the note verbatim, "
         "phrase the answer as 'at least N among the first M overdue POs checked', "
-        "never a confident total.",
+        "never a confident total. Response includes purchaseOrders: the actual PO "
+        "numbers found without a goods receipt (not just a count) — use it "
+        "directly if asked to list them.",
         {
             "cap_purchase_orders": {
                 "type": "integer",
@@ -882,7 +898,9 @@ TOOL_SPECS: list[dict] = [
         "Count of distinct accounting documents cleared in a date range — 'how "
         "many accounting documents were cleared last week', or scoped to one "
         "vendor, 'how many invoices were paid to vendor X this month' (pass "
-        "vendor=<supplier number>). Date range applies to the clearing date.",
+        "vendor=<supplier number>). Date range applies to the clearing date. "
+        "Response includes accountingDocuments: a sample of up to 20 matching "
+        "accounting document numbers.",
         {
             "period": {
                 "type": "string",
@@ -899,7 +917,8 @@ TOOL_SPECS: list[dict] = [
     _fn(
         "count_new_vendors",
         "Count of vendors created in a date range — 'how many new vendors were "
-        "onboarded this quarter'.",
+        "onboarded this quarter'. Response includes vendors: a sample of up to 20 "
+        "matching {supplier, supplierName} pairs.",
         {
             "period": {
                 "type": "string",
@@ -914,7 +933,8 @@ TOOL_SPECS: list[dict] = [
     _fn(
         "count_blocked_vendors",
         "Count of vendors currently blocked for posting or purchasing — 'how many "
-        "vendors are blocked right now'. No arguments.",
+        "vendors are blocked right now'. No arguments. Response includes vendors: "
+        "a sample of up to 20 matching {supplier, supplierName} pairs.",
         {},
         [],
     ),

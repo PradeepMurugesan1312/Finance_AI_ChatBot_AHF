@@ -1479,6 +1479,7 @@ def test_count_purchase_orders_filters_by_period_and_vendor(fake_s4):
     assert out["count"] == 2
     assert out["connected"] is True
     assert out["capped"] is False
+    assert out["purchaseOrders"] == ["4500000001", "4500000002"]
 
 
 def test_count_purchase_orders_pending_approval_only(fake_s4):
@@ -1545,6 +1546,7 @@ def test_count_invoices_by_fiscal_period_dedupes_by_accounting_document(fake_s4)
         "AccountingDocumentType eq 'KR' and CompanyCode eq '1710' "
         "and FiscalYear eq '2017' and FiscalPeriod eq '5'"
     )
+    assert sorted(out["accountingDocuments"]) == ["1900000001", "1900000002"]
 
 
 def test_count_goods_receipts_dedupes_and_excludes_cancelled(fake_s4):
@@ -1560,6 +1562,23 @@ def test_count_goods_receipts_dedupes_and_excludes_cancelled(fake_s4):
     filt = fake_s4.requests[-1]["params"]["$filter"]
     assert "GoodsMovementIsCancelled eq false" in filt
     assert "PurchaseOrder eq '4500001234'" in filt
+    assert out["materialDocuments"] == [
+        {"materialDocument": "4900000121", "materialDocumentYear": "2017"},
+        {"materialDocument": "4900000122", "materialDocumentYear": "2017"},
+    ]
+
+
+def test_count_result_sample_is_capped_and_notes_truncation(fake_s4):
+    # _LIST_SAMPLE_CAP (20) is independent of and smaller than _COUNT_CAP
+    # (200) -- with more than 20 matching POs, the count is exact but the
+    # returned sample list is capped, and the note says so.
+    fake_s4.routes["/A_PurchaseOrder"] = {
+        "json": _d([{"PurchaseOrder": str(4500000000 + i)} for i in range(25)])
+    }
+    out = S4HANAClient(_settings()).count_purchase_orders()
+    assert out["count"] == 25
+    assert len(out["purchaseOrders"]) == 20
+    assert "Showing the first 20 of 25" in out["note"]
 
 
 def test_count_pos_overdue_without_goods_receipt_all_missing(fake_s4):
@@ -1574,6 +1593,7 @@ def test_count_pos_overdue_without_goods_receipt_all_missing(fake_s4):
     assert out["count"] == 2
     assert out["scannedPurchaseOrders"] == 2
     assert out["capped"] is True
+    assert out["purchaseOrders"] == ["4500000001", "4500000002"]
 
 
 def test_count_pos_overdue_without_goods_receipt_reports_unavailable_when_po_field_dropped(fake_s4):
@@ -1618,19 +1638,25 @@ def test_count_cleared_documents_scoped_to_vendor_dedupes(fake_s4):
 
 
 def test_count_new_vendors_filters_by_creation_date(fake_s4):
-    fake_s4.routes["/A_Supplier"] = {"json": _d([{"Supplier": "1"}, {"Supplier": "2"}])}
+    fake_s4.routes["/A_Supplier"] = {
+        "json": _d([{"Supplier": "1", "SupplierName": "Acme"}, {"Supplier": "2", "SupplierName": "Beta"}])
+    }
     out = S4HANAClient(_settings()).count_new_vendors(period="this_quarter")
     assert out["count"] == 2
     assert "CreationDate ge datetime'" in fake_s4.requests[-1]["params"]["$filter"]
+    assert out["vendors"] == [
+        {"supplier": "1", "supplierName": "Acme"}, {"supplier": "2", "supplierName": "Beta"},
+    ]
 
 
 def test_count_blocked_vendors_boolean_or_filter(fake_s4):
-    fake_s4.routes["/A_Supplier"] = {"json": _d([{"Supplier": "1"}])}
+    fake_s4.routes["/A_Supplier"] = {"json": _d([{"Supplier": "1", "SupplierName": "Acme"}])}
     out = S4HANAClient(_settings()).count_blocked_vendors()
     assert fake_s4.requests[-1]["params"]["$filter"] == (
         "PurchasingIsBlockedForSupplier eq true or PostingIsBlocked eq true"
     )
     assert out["count"] == 1
+    assert out["vendors"] == [{"supplier": "1", "supplierName": "Acme"}]
 
 
 def test_search_vendors_by_name_case_insensitive_substring(fake_s4):

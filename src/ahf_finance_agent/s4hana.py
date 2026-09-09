@@ -2257,21 +2257,29 @@ class S4HANAClient:
 
     # -- "how many" / volume counts -----------------------------------
     # Every method below shares one response shape: on success
-    # {"count", "capped", "connected": True, "filters", "note"}; on an
+    # {"count", "capped", "connected": True, "filters", "note", <a records
+    # key named for what's being counted, e.g. "purchaseOrders">}; on an
     # S4HANAError, {"count": None, "capped": False, "connected": False,
-    # "filters", "message"}. None of this relies on an OData aggregate
-    # feature ($inlinecount/__count) — every count is a bounded, paginated
-    # row fetch via _paged_fetch, same philosophy as the AP/AR summaries
-    # above. Every date-range and boolean $filter here is a FIRST USE of its
-    # kind on this tenant (no prior precedent in this module) — unverified,
-    # and each method degrades to connected=False rather than crashing if
-    # the tenant rejects it. Confirm live and update s4-tenant-quirks memory.
+    # "filters", "message"}. The records list is capped at _LIST_SAMPLE_CAP
+    # (independent of the larger _COUNT_CAP the count itself is scanned
+    # over) so a "how many" answer always carries enough of the actual
+    # matching records to answer a same-turn follow-up ("list them" / "which
+    # ones") WITHOUT the model having to claim it can't — it already has
+    # them, or can call this exact tool again to get them. None of this
+    # relies on an OData aggregate feature ($inlinecount/__count) — every
+    # count is a bounded, paginated row fetch via _paged_fetch, same
+    # philosophy as the AP/AR summaries above. Every date-range and boolean
+    # $filter here is a FIRST USE of its kind on this tenant (no prior
+    # precedent in this module) — unverified, and each method degrades to
+    # connected=False rather than crashing if the tenant rejects it. Confirm
+    # live and update s4-tenant-quirks memory.
 
     _COUNT_CAP = 200
+    _LIST_SAMPLE_CAP = 20
 
     @staticmethod
-    def _count_ok(count: int, capped: bool, filters: dict, note: str) -> dict:
-        return {"count": count, "capped": capped, "connected": True, "filters": filters, "note": note}
+    def _count_ok(count: int, capped: bool, filters: dict, note: str, **records: list) -> dict:
+        return {"count": count, "capped": capped, "connected": True, "filters": filters, "note": note, **records}
 
     @staticmethod
     def _count_unavailable(filters: dict, detail: str) -> dict:
@@ -2290,18 +2298,30 @@ class S4HANAClient:
     def _count_rows(
         self, capability: str, *, select: tuple[str, ...], filt: str | None,
         dedup_keys: tuple[str, ...] | None = None, cap: int | None = None, orderby: str | None = None,
-    ) -> tuple[int, bool]:
+    ) -> tuple[int, bool, list[dict]]:
         """Paginated count of rows matching *filt* on *capability*, deduped
         to one row per document via *dedup_keys* when the underlying entity
-        is line-item level (a cube row isn't a document)."""
+        is line-item level (a cube row isn't a document). Returns
+        ``(count, capped, records)`` — *records* is the deduped row list
+        (still up to the full _COUNT_CAP scan), for callers to build a
+        capped, named sample of matching identifiers from."""
         rows, capped = _paged_fetch(
             lambda skip, top: self._capability_query(
                 capability, select=select, filt=filt, top=top, skip=skip, orderby=orderby,
             ),
             max_pages=self._pages_for(cap or self._COUNT_CAP),
         )
-        count = _count_distinct(rows, dedup_keys) if dedup_keys else len(rows)
-        return count, capped
+        if not dedup_keys:
+            return len(rows), capped, rows
+        deduped: dict[tuple, dict] = {}
+        for r in rows:
+            deduped.setdefault(tuple(r.get(k) for k in dedup_keys), r)
+        return len(deduped), capped, list(deduped.values())
+
+    def _sample_note(self, count: int, sample_len: int) -> str:
+        if sample_len >= count:
+            return ""
+        return f" Showing the first {sample_len} of {count}."
 
     def count_purchase_orders(
         self, period: str | None = None, date_from: str | None = None, date_to: str | None = None,
@@ -2329,15 +2349,17 @@ class S4HANAClient:
             "companyCode": company_code, "pendingApproval": pending_approval,
         }
         try:
-            count, capped = self._count_rows(
+            count, capped, records = self._count_rows(
                 "purchase_order_header", select=("PurchaseOrder",), filt=" and ".join(clauses) or None,
             )
         except S4HANAError as exc:
             return self._count_unavailable(filters, str(exc))
+        sample = [r.get("PurchaseOrder") for r in records[: self._LIST_SAMPLE_CAP]]
         return self._count_ok(count, capped, filters, (
             f"Count of purchase orders matching the given scope, computed from up to "
             f"{self._COUNT_CAP} matching POs" + (" (truncated — there may be more)" if capped else "") + "."
-        ))
+            + self._sample_note(count, len(sample))
+        ), purchaseOrders=sample)
 
     def count_purchase_requisitions(
         self, period: str | None = None, date_from: str | None = None, date_to: str | None = None,
@@ -2352,16 +2374,17 @@ class S4HANAClient:
         filt = _date_range_filter("CreationDate", *date_range) if date_range else None
         filters = self._echo_dates(period, date_range)
         try:
-            count, capped = self._count_rows(
+            count, capped, records = self._count_rows(
                 "purchase_requisition_header", select=("PurchaseRequisition",), filt=filt,
             )
         except S4HANAError as exc:
             return self._count_unavailable(filters, str(exc))
+        sample = [r.get("PurchaseRequisition") for r in records[: self._LIST_SAMPLE_CAP]]
         return self._count_ok(count, capped, filters, (
             f"Count of purchase requisitions with a CreationDate in this window, computed "
             f"from up to {self._COUNT_CAP} matching requisitions"
-            + (" (truncated — there may be more)" if capped else "") + "."
-        ))
+            + (" (truncated — there may be more)" if capped else "") + "." + self._sample_note(count, len(sample))
+        ), purchaseRequisitions=sample)
 
     def count_supplier_invoices(
         self, period: str | None = None, date_from: str | None = None, date_to: str | None = None,
@@ -2386,16 +2409,21 @@ class S4HANAClient:
             "companyCode": company_code, "blockedForPayment": blocked_for_payment,
         }
         try:
-            count, capped = self._count_rows(
+            count, capped, records = self._count_rows(
                 "supplier_invoice_header", select=("SupplierInvoice", "FiscalYear"),
                 filt=" and ".join(clauses) or None,
             )
         except S4HANAError as exc:
             return self._count_unavailable(filters, str(exc))
+        sample = [
+            {"supplierInvoice": r.get("SupplierInvoice"), "fiscalYear": r.get("FiscalYear")}
+            for r in records[: self._LIST_SAMPLE_CAP]
+        ]
         return self._count_ok(count, capped, filters, (
             f"Count of supplier invoices matching the given scope, computed from up to "
             f"{self._COUNT_CAP} matching invoices" + (" (truncated — there may be more)" if capped else "") + "."
-        ))
+            + self._sample_note(count, len(sample))
+        ), invoices=sample)
 
     def count_invoices_by_fiscal_period(self, company_code: str, fiscal_year: str, fiscal_period: str) -> dict:
         """Count of DISTINCT vendor-invoice accounting documents (doc type
@@ -2411,17 +2439,19 @@ class S4HANAClient:
         )
         filters = {"companyCode": company_code, "fiscalYear": fiscal_year, "fiscalPeriod": fiscal_period}
         try:
-            count, capped = self._count_rows(
+            count, capped, records = self._count_rows(
                 "journal_entry_item", select=_INVOICE_PERIOD_SELECT, filt=filt,
                 dedup_keys=("CompanyCode", "FiscalYear", "AccountingDocument"),
             )
         except S4HANAError as exc:
             return self._count_unavailable(filters, str(exc))
+        sample = [r.get("AccountingDocument") for r in records[: self._LIST_SAMPLE_CAP]]
         return self._count_ok(count, capped, filters, (
             f"Count of distinct vendor-invoice accounting documents (doc type KR) posted "
             f"in this fiscal period, computed from up to {self._COUNT_CAP} matching line "
             "items" + (" (truncated — there may be more)" if capped else "") + "."
-        ))
+            + self._sample_note(count, len(sample))
+        ), accountingDocuments=sample)
 
     def count_goods_receipts(
         self, period: str | None = None, date_from: str | None = None, date_to: str | None = None,
@@ -2441,19 +2471,23 @@ class S4HANAClient:
             clauses.append(f"PurchaseOrder eq {_lit(purchase_order)}")
         filters = {**self._echo_dates(period, date_range), "purchaseOrder": purchase_order}
         try:
-            count, capped = self._count_rows(
+            count, capped, records = self._count_rows(
                 "goods_receipt_item", select=("MaterialDocument", "MaterialDocumentYear"),
                 filt=" and ".join(clauses), dedup_keys=("MaterialDocument", "MaterialDocumentYear"),
             )
         except S4HANAError as exc:
             return self._count_unavailable(filters, str(exc))
+        sample = [
+            {"materialDocument": r.get("MaterialDocument"), "materialDocumentYear": r.get("MaterialDocumentYear")}
+            for r in records[: self._LIST_SAMPLE_CAP]
+        ]
         return self._count_ok(count, capped, filters, (
             f"Count of distinct (non-cancelled) goods-receipt documents in this window, "
             f"computed from up to {self._COUNT_CAP} matching line items"
             + (" (truncated — there may be more)" if capped else "") + ". NOT filtered to "
             "POs that are still open — counts all matching receipts regardless of the "
-            "PO's completion status."
-        ))
+            "PO's completion status." + self._sample_note(count, len(sample))
+        ), materialDocuments=sample)
 
     def count_pos_overdue_without_goods_receipt(self, cap_purchase_orders: int = 30) -> dict:
         """Best-effort, EXPLICITLY SAMPLED count of purchase orders with an
@@ -2494,7 +2528,7 @@ class S4HANAClient:
                 sampled.append(po)
             if len(sampled) >= cap_purchase_orders:
                 break
-        without_gr = 0
+        without_gr: list[str] = []
         for po in sampled:
             try:
                 gr_rows = self._capability_query(
@@ -2504,12 +2538,13 @@ class S4HANAClient:
             except S4HANAError:
                 continue  # can't tell for this one PO -- skip it rather than guess
             if not gr_rows:
-                without_gr += 1
+                without_gr.append(po)
         return {
-            "count": without_gr,
+            "count": len(without_gr),
             "capped": True,
             "connected": True,
             "scannedPurchaseOrders": len(sampled),
+            "purchaseOrders": without_gr,
             "filters": {"capPurchaseOrders": cap_purchase_orders},
             "note": (
                 f"NOT an exhaustive count — sampled the first {len(sampled)} distinct "
@@ -2541,18 +2576,19 @@ class S4HANAClient:
             clauses.append(f"Supplier eq {_lit(vendor)}")
         filters = {**self._echo_dates(period, date_range), "companyCode": company_code, "vendor": vendor}
         try:
-            count, capped = self._count_rows(
+            count, capped, records = self._count_rows(
                 "journal_entry_item", select=_CLEARED_DOCS_SELECT, filt=" and ".join(clauses) or None,
                 dedup_keys=("CompanyCode", "FiscalYear", "AccountingDocument"),
             )
         except S4HANAError as exc:
             return self._count_unavailable(filters, str(exc))
+        sample = [r.get("AccountingDocument") for r in records[: self._LIST_SAMPLE_CAP]]
         return self._count_ok(count, capped, filters, (
             f"Count of distinct accounting documents with a ClearingDate in this window, "
             f"computed from up to {self._COUNT_CAP} matching line items"
             + (" (truncated — there may be more)" if capped else "") + ". Not an official "
-            "payment-run report."
-        ))
+            "payment-run report." + self._sample_note(count, len(sample))
+        ), accountingDocuments=sample)
 
     def count_new_vendors(
         self, period: str | None = None, date_from: str | None = None, date_to: str | None = None,
@@ -2563,27 +2599,40 @@ class S4HANAClient:
         filt = _date_range_filter("CreationDate", *date_range) if date_range else None
         filters = self._echo_dates(period, date_range)
         try:
-            count, capped = self._count_rows("supplier", select=("Supplier",), filt=filt)
+            count, capped, records = self._count_rows(
+                "supplier", select=("Supplier", "SupplierName"), filt=filt,
+            )
         except S4HANAError as exc:
             return self._count_unavailable(filters, str(exc))
+        sample = [
+            {"supplier": r.get("Supplier"), "supplierName": r.get("SupplierName")}
+            for r in records[: self._LIST_SAMPLE_CAP]
+        ]
         return self._count_ok(count, capped, filters, (
             f"Count of vendors with a CreationDate in this window, computed from up to "
             f"{self._COUNT_CAP} matching suppliers" + (" (truncated — there may be more)" if capped else "") + "."
-        ))
+            + self._sample_note(count, len(sample))
+        ), vendors=sample)
 
     def count_blocked_vendors(self) -> dict:
         """Count of vendors currently blocked for posting or purchasing —
         "how many vendors are blocked right now"."""
         filt = "PurchasingIsBlockedForSupplier eq true or PostingIsBlocked eq true"
         try:
-            count, capped = self._count_rows("supplier", select=("Supplier",), filt=filt)
+            count, capped, records = self._count_rows(
+                "supplier", select=("Supplier", "SupplierName"), filt=filt,
+            )
         except S4HANAError as exc:
             return self._count_unavailable({}, str(exc))
+        sample = [
+            {"supplier": r.get("Supplier"), "supplierName": r.get("SupplierName")}
+            for r in records[: self._LIST_SAMPLE_CAP]
+        ]
         return self._count_ok(count, capped, {}, (
             f"Count of suppliers with PurchasingIsBlockedForSupplier or PostingIsBlocked "
             f"set, computed from up to {self._COUNT_CAP} matching suppliers"
-            + (" (truncated — there may be more)" if capped else "") + "."
-        ))
+            + (" (truncated — there may be more)" if capped else "") + "." + self._sample_note(count, len(sample))
+        ), vendors=sample)
 
     def search_vendors_by_name(self, name: str, cap: int = 200) -> dict:
         """Resolve a vendor NAME to supplier number(s) — every other tool
