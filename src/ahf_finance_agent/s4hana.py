@@ -67,7 +67,8 @@ import logging
 import re
 import threading
 import time
-from typing import Any
+from datetime import date, timedelta
+from typing import Any, Callable
 
 import httpx
 
@@ -189,8 +190,18 @@ _ACTUALS_SELECT = (
 _OPEN_ITEMS_SELECT = (
     "CompanyCode", "FiscalYear", "AccountingDocument", "AccountingDocumentItem",
     "PostingDate", "DocumentDate", "AmountInCompanyCodeCurrency", "CompanyCodeCurrency",
-    "DebitCreditCode", "Supplier", "Customer", "ClearingDate",
+    "DebitCreditCode", "Supplier", "Customer", "ClearingDate", "NetDueDate",
 )
+# Minimal select for "how many accounting documents got cleared / how many
+# invoices were paid" style counts — same journal_entry_item cube, only the
+# fields needed to dedupe line items down to one row per accounting document
+# and to scope by company code / vendor / clearing-date range.
+_CLEARED_DOCS_SELECT = ("CompanyCode", "FiscalYear", "AccountingDocument", "Supplier", "ClearingDate")
+# Minimal select for "how many invoices were posted in fiscal period N" —
+# AccountingDocumentType 'KR' (vendor invoice) is CONFIRMED on this tenant
+# from the live A_OperationalAcctgDocItemCube payload used to fix
+# _ACTUALS_SELECT above (see get_cost_object_actuals's comment).
+_INVOICE_PERIOD_SELECT = ("CompanyCode", "FiscalYear", "AccountingDocument", "FiscalPeriod", "AccountingDocumentType")
 
 _PO_SRV = "API_PURCHASEORDER_PROCESS_SRV"
 _PO_SET = "A_PurchaseOrder"
@@ -615,6 +626,114 @@ def _is_currently_valid(start: Any, end: Any) -> bool | None:
     return True
 
 
+# --- "how many" / volume-question support --------------------------------
+# Shared by every count_* method below. None of this relies on an OData
+# aggregate feature ($inlinecount/__count are unverified on this tenant) —
+# every count is a bounded, paginated row fetch, same "compute over a capped
+# window, admit if capped" philosophy as get_accounts_payable_summary /
+# get_cost_object_actuals.
+
+_PERIODS = ("today", "this_week", "last_week", "this_month", "last_month", "this_quarter", "this_year")
+
+
+def _add_months(d: date, months: int) -> date:
+    """*d* shifted by *months* whole calendar months, clamped to day 1 (only
+    ever used on the first of a month here, so no end-of-month edge cases)."""
+    month_index = d.month - 1 + months
+    year = d.year + month_index // 12
+    month = month_index % 12 + 1
+    return date(year, month, 1)
+
+
+def _period_bounds(period: str, today: date | None = None) -> tuple[date, date]:
+    """Resolve a named period to a ``[start, end)`` date range. Weeks are ISO
+    (Monday-Sunday); months/quarters/years are calendar periods. *today* is
+    injectable so callers (and tests) don't depend on wall-clock time."""
+    today = today or date.today()
+    if period not in _PERIODS:
+        raise ValueError(f"unknown period {period!r} — expected one of {_PERIODS}")
+    if period == "today":
+        return today, today + timedelta(days=1)
+    if period in ("this_week", "last_week"):
+        monday = today - timedelta(days=today.weekday())
+        if period == "last_week":
+            monday -= timedelta(days=7)
+        return monday, monday + timedelta(days=7)
+    if period in ("this_month", "last_month"):
+        first = today.replace(day=1)
+        if period == "last_month":
+            first = _add_months(first, -1)
+        return first, _add_months(first, 1)
+    if period == "this_quarter":
+        q_start_month = (today.month - 1) // 3 * 3 + 1
+        first = date(today.year, q_start_month, 1)
+        return first, _add_months(first, 3)
+    first = date(today.year, 1, 1)  # this_year
+    return first, date(today.year + 1, 1, 1)
+
+
+def _resolve_date_range(
+    period: str | None, date_from: str | None, date_to: str | None,
+) -> tuple[date, date] | None:
+    """Turn a ``period`` shorthand OR explicit ``date_from``/``date_to``
+    (``YYYY-MM-DD``) into a ``[start, end)`` range, or ``None`` when the
+    caller gave no date scoping at all (a status-only count). Raises
+    ``ValueError`` on a malformed date string — caught by ``dispatch_tool``'s
+    generic ``ValueError`` handler, not a crash."""
+    if period:
+        return _period_bounds(period)
+    if not date_from and not date_to:
+        return None
+    start = date.fromisoformat(date_from) if date_from else date(1990, 1, 1)
+    end = (date.fromisoformat(date_to) + timedelta(days=1)) if date_to else date.today() + timedelta(days=1)
+    return start, end
+
+
+def _dt_literal(d: date) -> str:
+    """OData v2 ``Edm.DateTime`` filter literal. Standard SAP Gateway syntax,
+    but the first use of a date-range $filter anywhere in this module —
+    unverified on this specific tenant; every caller wraps its query in
+    ``except S4HANAError`` so a wrong guess degrades to 'not available'
+    rather than crashing (see the tenant-quirk notes for prior examples of
+    this exact pattern with $select fields)."""
+    return f"datetime'{d.isoformat()}T00:00:00'"
+
+
+def _date_range_filter(field: str, start: date, end: date) -> str:
+    return f"{field} ge {_dt_literal(start)} and {field} lt {_dt_literal(end)}"
+
+
+def _count_distinct(rows: list[dict], key_fields: tuple[str, ...]) -> int:
+    """Number of distinct documents among line-item-level *rows* — needed
+    because the journal-entry cube and material-document items are one row
+    per LINE, not per document (confirmed on this tenant: a single
+    AccountingDocument had 2 line items in the live sample payload used to
+    design this)."""
+    return len({tuple(r.get(k) for k in key_fields) for r in rows})
+
+
+def _paged_fetch(
+    fetcher: Callable[[int, int], list[dict]], *, page_size: int = 50, max_pages: int = 4,
+) -> tuple[list[dict], bool]:
+    """Fetch up to ``page_size * max_pages`` rows via repeated ``$skip``-paged
+    calls to *fetcher* (``fetcher(skip, top) -> rows``), stopping early on a
+    short page. Returns ``(rows, capped)`` — ``capped=True`` means the fetch
+    hit ``max_pages`` and there may be more matching rows than were scanned.
+
+    Exists because ``S4HANAClient._query`` hard-clamps a single call's
+    ``$top`` to 50 (see its docstring) — several existing methods asked for
+    ``top=200`` believing they'd get up to 200 rows in one call and were
+    silently capped at 50 all along. This is the fix: genuinely page for it.
+    """
+    rows: list[dict] = []
+    for page in range(max_pages):
+        batch = fetcher(page * page_size, page_size)
+        rows.extend(batch)
+        if len(batch) < page_size:
+            return rows, False
+    return rows, True
+
+
 def _is_odata_error_body(resp: httpx.Response) -> bool:
     """True when a 4xx body is a SAP Gateway OData error (``{"error": {...}}``).
 
@@ -961,10 +1080,12 @@ class S4HANAClient:
         return _clean(rows[0]) if rows else None
 
     def _query(
-        self, srv: str, entity_set: str, *, select: tuple[str, ...], filt: str,
+        self, srv: str, entity_set: str, *, select: tuple[str, ...], filt: str | None,
         top: int = 20, orderby: str | None = None, skip: int = 0,
     ) -> list[dict]:
-        params = {"$filter": filt, "$top": str(max(1, min(top, 50)))}
+        params: dict[str, str] = {"$top": str(max(1, min(top, 50)))}
+        if filt:
+            params["$filter"] = filt
         if skip and skip > 0:
             params["$skip"] = str(skip)
         if orderby:
@@ -1620,7 +1741,12 @@ class S4HANAClient:
         if fiscal_year:
             filt += f" and FiscalYear eq {_lit(fiscal_year)}"
         try:
-            items = self._capability_query("journal_entry_item", select=_ACTUALS_SELECT, filt=filt, top=top)
+            items, capped = _paged_fetch(
+                lambda skip, page_top: self._capability_query(
+                    "journal_entry_item", select=_ACTUALS_SELECT, filt=filt, top=page_top, skip=skip,
+                ),
+                max_pages=self._pages_for(top),
+            )
         except S4HANAError as exc:
             logger.info("cost object actuals unavailable for %s %s: %s", cost_object_type, cost_object_id, exc)
             return None
@@ -1637,10 +1763,18 @@ class S4HANAClient:
             "note": (
                 "Net posted amount from FI/CO line items tagged with this cost object "
                 "(debits minus credits, company-code currency). This is ACTUAL spend to "
-                "date only — not a budget, plan, or remaining figure — and may be "
-                f"truncated if there are more than {top} postings."
+                "date only — not a budget, plan, or remaining figure"
+                + (f" — truncated at {len(items)} postings, there may be more." if capped else ".")
             ),
         }
+
+    @staticmethod
+    def _pages_for(top: int, page_size: int = 50) -> int:
+        """How many 50-row pages :meth:`_paged_fetch` needs to cover *top*
+        rows (ceiling division) — used so existing ``top=200``-style method
+        signatures keep meaning what they say now that ``_query`` clamps a
+        single call's ``$top`` to 50."""
+        return max(1, -(-top // page_size))
 
     @staticmethod
     def _net_posted_amount(items: list[dict]) -> tuple[float, str | None]:
@@ -1677,7 +1811,12 @@ class S4HANAClient:
         if fiscal_year:
             filt += f" and FiscalYear eq {_lit(fiscal_year)}"
         try:
-            items = self._capability_query("journal_entry_item", select=_ACTUALS_SELECT, filt=filt, top=top)
+            items, capped = _paged_fetch(
+                lambda skip, page_top: self._capability_query(
+                    "journal_entry_item", select=_ACTUALS_SELECT, filt=filt, top=page_top, skip=skip,
+                ),
+                max_pages=self._pages_for(top),
+            )
         except S4HANAError as exc:
             logger.info("G/L account activity unavailable for %s/%s: %s", company_code, gl_account, exc)
             return None
@@ -1696,16 +1835,17 @@ class S4HANAClient:
                 "minus credits, company-code currency) — a computed sum of postings in "
                 "scope, NOT an official trial-balance / period-end balance figure. For "
                 "that, use the G/L balance report."
+                + (f" Truncated at {len(items)} postings, there may be more." if capped else "")
             ),
         }
 
-    # Cap on postings scanned for the AP/AR open-items summaries below. Matches
-    # the hard ceiling _query() already applies to every capability query (see
-    # its `min(top, 50)`) — passing a higher number here would silently be
-    # truncated to 50 anyway, so this is the true, honest limit, not an
-    # aspirational one. A company code with more than 50 open items will be
-    # under-counted; the "note" on both summaries says so explicitly.
-    _OPEN_ITEMS_TOP = 50
+    # Cap on postings scanned for the AP/AR open-items summaries below.
+    # _query() hard-clamps a single call's $top to 50, so this is paged via
+    # _paged_fetch (4 pages of 50) to actually reach 200 rather than silently
+    # capping at 50 — see _paged_fetch's docstring for the bug this fixes. A
+    # company code with more than 200 open items is still under-counted; the
+    # "note" on both summaries says so explicitly.
+    _OPEN_ITEMS_TOP = 200
 
     def get_accounts_payable_summary(
         self, company_code: str, vendor: str | None = None, fiscal_year: str | None = None,
@@ -1716,13 +1856,14 @@ class S4HANAClient:
         journal-entry cube :meth:`get_gl_account_activity` /
         :meth:`get_cost_object_actuals` already use in production.
 
-        This answers "how much do we owe" / "how many open vendor items"
-        style portfolio questions — as opposed to every other AP tool here,
-        which needs a specific invoice number. It is NOT an official AP aging
-        report (no day-based buckets, no partial-clearing netting beyond
-        debit/credit sign) and is capped at the most recent
-        :data:`_OPEN_ITEMS_TOP` postings — point the user at the AP aging
-        report / FBL1N for a definitive, complete figure.
+        This answers "how much do we owe" / "how many open vendor items" /
+        "how many invoices are overdue for payment" style portfolio
+        questions — as opposed to every other AP tool here, which needs a
+        specific invoice number. It is NOT an official AP aging report (no
+        day-based buckets, no partial-clearing netting beyond debit/credit
+        sign) and is capped at the most recent :data:`_OPEN_ITEMS_TOP`
+        postings — point the user at the AP aging report / FBL1N for a
+        definitive, complete figure.
 
         The "Supplier" field this relies on is CONFIRMED present on this
         tenant (already used by :meth:`get_payment_clearing_status`), so
@@ -1735,9 +1876,12 @@ class S4HANAClient:
         if fiscal_year:
             filt += f" and FiscalYear eq {_lit(fiscal_year)}"
         try:
-            items = self._capability_query(
-                "journal_entry_item", select=_OPEN_ITEMS_SELECT, filt=filt,
-                top=self._OPEN_ITEMS_TOP, orderby="PostingDate desc",
+            items, capped = _paged_fetch(
+                lambda skip, page_top: self._capability_query(
+                    "journal_entry_item", select=_OPEN_ITEMS_SELECT, filt=filt,
+                    top=page_top, skip=skip, orderby="PostingDate desc",
+                ),
+                max_pages=self._pages_for(self._OPEN_ITEMS_TOP),
             )
         except S4HANAError as exc:
             return {
@@ -1747,7 +1891,14 @@ class S4HANAClient:
             }
         vendor_lines = [it for it in items if _is_set(it.get("Supplier"))]
         open_lines = [it for it in vendor_lines if not _is_set(it.get("ClearingDate"))]
+        # Overdue = open AND past its net due date. NetDueDate is confirmed
+        # present on this tenant's journal-entry cube (live payload used to
+        # design the count-tool family this session). Computed from the SAME
+        # already-fetched, already-capped open_lines — no extra HTTP call.
+        now_ms = time.time() * 1000
+        overdue_lines = [ln for ln in open_lines if (_sap_date_ms(ln.get("NetDueDate")) or 0) < now_ms]
         net, currency = self._net_posted_amount(open_lines)
+        overdue_net, _ = self._net_posted_amount(overdue_lines)
         return {
             "companyCode": company_code,
             "vendor": vendor,
@@ -1761,12 +1912,18 @@ class S4HANAClient:
             # against a known invoice on this tenant — sanity-check against
             # FBL1N before treating the figure as authoritative.
             "netOpenAmount": _round(-net, 2) if open_lines else 0.0,
+            "overdueCount": len(overdue_lines),
+            "overdueAmount": _round(-overdue_net, 2) if overdue_lines else 0.0,
             "currency": currency,
             "postingsScanned": len(items),
             "note": (
                 f"Computed from up to {self._OPEN_ITEMS_TOP} of the most recent postings "
-                "in scope — NOT an official AP aging report (no day-based aging buckets, "
-                "no dispute status). A negative figure can be genuine (e.g. debit memos "
+                "in scope"
+                + (" (truncated — there may be more)" if capped else "")
+                + " — NOT an official AP aging report (no day-based aging buckets, "
+                "no dispute status). overdueCount/overdueAmount are the subset of the "
+                "open items above already past NetDueDate — same cap, not a separate "
+                "fetch. A negative figure can be genuine (e.g. debit memos "
                 "or partial reversals among the open items scanned), but the debit/credit "
                 "sign convention here has not been independently verified against a known "
                 "invoice on this tenant — if the sign looks surprising, say so rather than "
@@ -1798,9 +1955,12 @@ class S4HANAClient:
         if fiscal_year:
             filt += f" and FiscalYear eq {_lit(fiscal_year)}"
         try:
-            items = self._capability_query(
-                "journal_entry_item", select=_OPEN_ITEMS_SELECT, filt=filt,
-                top=self._OPEN_ITEMS_TOP, orderby="PostingDate desc",
+            items, capped = _paged_fetch(
+                lambda skip, page_top: self._capability_query(
+                    "journal_entry_item", select=_OPEN_ITEMS_SELECT, filt=filt,
+                    top=page_top, skip=skip, orderby="PostingDate desc",
+                ),
+                max_pages=self._pages_for(self._OPEN_ITEMS_TOP),
             )
         except S4HANAError as exc:
             return {
@@ -1854,11 +2014,370 @@ class S4HANAClient:
             "postingsScanned": len(items),
             "note": (
                 f"Computed from up to {self._OPEN_ITEMS_TOP} of the most recent postings "
-                "in scope — NOT an official AR aging report (no day-based aging buckets, "
+                "in scope"
+                + (" (truncated — there may be more)" if capped else "")
+                + " — NOT an official AR aging report (no day-based aging buckets, "
                 "no dispute/dunning status). The debit/credit sign convention has not been "
                 "independently verified against a known customer invoice on this tenant; "
                 "sanity-check against FBL5N before relying on this figure. If there are "
                 "more open items than scanned, this under-counts."
+            ),
+        }
+
+    # -- "how many" / volume counts -----------------------------------
+    # Every method below shares one response shape: on success
+    # {"count", "capped", "connected": True, "filters", "note"}; on an
+    # S4HANAError, {"count": None, "capped": False, "connected": False,
+    # "filters", "message"}. None of this relies on an OData aggregate
+    # feature ($inlinecount/__count) — every count is a bounded, paginated
+    # row fetch via _paged_fetch, same philosophy as the AP/AR summaries
+    # above. Every date-range and boolean $filter here is a FIRST USE of its
+    # kind on this tenant (no prior precedent in this module) — unverified,
+    # and each method degrades to connected=False rather than crashing if
+    # the tenant rejects it. Confirm live and update s4-tenant-quirks memory.
+
+    _COUNT_CAP = 200
+
+    @staticmethod
+    def _count_ok(count: int, capped: bool, filters: dict, note: str) -> dict:
+        return {"count": count, "capped": capped, "connected": True, "filters": filters, "note": note}
+
+    @staticmethod
+    def _count_unavailable(filters: dict, detail: str) -> dict:
+        return {
+            "count": None, "capped": False, "connected": False, "filters": filters,
+            "message": f"Count lookup is not available on this system: {detail}",
+        }
+
+    @staticmethod
+    def _echo_dates(period: str | None, date_range: tuple[date, date] | None) -> dict:
+        if not date_range:
+            return {"period": period, "dateFrom": None, "dateTo": None}
+        start, end = date_range
+        return {"period": period, "dateFrom": start.isoformat(), "dateTo": (end - timedelta(days=1)).isoformat()}
+
+    def _count_rows(
+        self, capability: str, *, select: tuple[str, ...], filt: str | None,
+        dedup_keys: tuple[str, ...] | None = None, cap: int | None = None, orderby: str | None = None,
+    ) -> tuple[int, bool]:
+        """Paginated count of rows matching *filt* on *capability*, deduped
+        to one row per document via *dedup_keys* when the underlying entity
+        is line-item level (a cube row isn't a document)."""
+        rows, capped = _paged_fetch(
+            lambda skip, top: self._capability_query(
+                capability, select=select, filt=filt, top=top, skip=skip, orderby=orderby,
+            ),
+            max_pages=self._pages_for(cap or self._COUNT_CAP),
+        )
+        count = _count_distinct(rows, dedup_keys) if dedup_keys else len(rows)
+        return count, capped
+
+    def count_purchase_orders(
+        self, period: str | None = None, date_from: str | None = None, date_to: str | None = None,
+        vendor: str | None = None, pending_approval: bool | None = None, company_code: str | None = None,
+    ) -> dict:
+        """Count of purchase orders matching scope — "how many POs were
+        created last week", "how many are pending approval right now", "how
+        many for vendor X this year". ``vendor`` is a supplier NUMBER, like
+        every other tool here — resolve a name first via
+        :meth:`search_vendors_by_name`. ``pending_approval=True`` filters to
+        ``ReleaseIsNotCompleted eq true`` (release not yet finished).
+        """
+        date_range = _resolve_date_range(period, date_from, date_to)
+        clauses = []
+        if date_range:
+            clauses.append(_date_range_filter("CreationDate", *date_range))
+        if vendor:
+            clauses.append(f"Supplier eq {_lit(vendor)}")
+        if company_code:
+            clauses.append(f"CompanyCode eq {_lit(company_code)}")
+        if pending_approval:
+            clauses.append("ReleaseIsNotCompleted eq true")
+        filters = {
+            **self._echo_dates(period, date_range), "vendor": vendor,
+            "companyCode": company_code, "pendingApproval": pending_approval,
+        }
+        try:
+            count, capped = self._count_rows(
+                "purchase_order_header", select=("PurchaseOrder",), filt=" and ".join(clauses) or None,
+            )
+        except S4HANAError as exc:
+            return self._count_unavailable(filters, str(exc))
+        return self._count_ok(count, capped, filters, (
+            f"Count of purchase orders matching the given scope, computed from up to "
+            f"{self._COUNT_CAP} matching POs" + (" (truncated — there may be more)" if capped else "") + "."
+        ))
+
+    def count_purchase_requisitions(
+        self, period: str | None = None, date_from: str | None = None, date_to: str | None = None,
+    ) -> dict:
+        """Count of purchase requisitions created in the given window — "how
+        many PRs were raised this month". Note: on this tenant, the PR
+        service currently 403s entirely (destination user not authorised for
+        API_PURCHASE_REQUISITION_SRV — a pre-existing, unrelated auth gap);
+        this reports ``connected=False`` until that's fixed SAP-side.
+        """
+        date_range = _resolve_date_range(period, date_from, date_to)
+        filt = _date_range_filter("CreationDate", *date_range) if date_range else None
+        filters = self._echo_dates(period, date_range)
+        try:
+            count, capped = self._count_rows(
+                "purchase_requisition_header", select=("PurchaseRequisition",), filt=filt,
+            )
+        except S4HANAError as exc:
+            return self._count_unavailable(filters, str(exc))
+        return self._count_ok(count, capped, filters, (
+            f"Count of purchase requisitions with a CreationDate in this window, computed "
+            f"from up to {self._COUNT_CAP} matching requisitions"
+            + (" (truncated — there may be more)" if capped else "") + "."
+        ))
+
+    def count_supplier_invoices(
+        self, period: str | None = None, date_from: str | None = None, date_to: str | None = None,
+        blocked_for_payment: bool | None = None, vendor: str | None = None, company_code: str | None = None,
+    ) -> dict:
+        """Count of supplier invoices matching scope — "how many invoices
+        were received last week", "how many invoices are currently blocked
+        for payment". ``vendor`` is the InvoicingParty supplier number.
+        """
+        date_range = _resolve_date_range(period, date_from, date_to)
+        clauses = []
+        if date_range:
+            clauses.append(_date_range_filter("PostingDate", *date_range))
+        if vendor:
+            clauses.append(f"InvoicingParty eq {_lit(vendor)}")
+        if company_code:
+            clauses.append(f"CompanyCode eq {_lit(company_code)}")
+        if blocked_for_payment:
+            clauses.append("PaymentBlockingReason ne ''")
+        filters = {
+            **self._echo_dates(period, date_range), "vendor": vendor,
+            "companyCode": company_code, "blockedForPayment": blocked_for_payment,
+        }
+        try:
+            count, capped = self._count_rows(
+                "supplier_invoice_header", select=("SupplierInvoice", "FiscalYear"),
+                filt=" and ".join(clauses) or None,
+            )
+        except S4HANAError as exc:
+            return self._count_unavailable(filters, str(exc))
+        return self._count_ok(count, capped, filters, (
+            f"Count of supplier invoices matching the given scope, computed from up to "
+            f"{self._COUNT_CAP} matching invoices" + (" (truncated — there may be more)" if capped else "") + "."
+        ))
+
+    def count_invoices_by_fiscal_period(self, company_code: str, fiscal_year: str, fiscal_period: str) -> dict:
+        """Count of DISTINCT vendor-invoice accounting documents (doc type
+        'KR' — CONFIRMED on this tenant from a live A_OperationalAcctgDocItemCube
+        payload, not a guess) posted in a given fiscal period — "how many
+        invoices were posted in fiscal period 5". Uses the journal-entry
+        cube's real FiscalPeriod field rather than deriving a period from
+        PostingDate, which would assume a calendar-month fiscal year variant.
+        """
+        filt = (
+            f"AccountingDocumentType eq 'KR' and CompanyCode eq {_lit(company_code)} "
+            f"and FiscalYear eq {_lit(fiscal_year)} and FiscalPeriod eq {_lit(fiscal_period)}"
+        )
+        filters = {"companyCode": company_code, "fiscalYear": fiscal_year, "fiscalPeriod": fiscal_period}
+        try:
+            count, capped = self._count_rows(
+                "journal_entry_item", select=_INVOICE_PERIOD_SELECT, filt=filt,
+                dedup_keys=("CompanyCode", "FiscalYear", "AccountingDocument"),
+            )
+        except S4HANAError as exc:
+            return self._count_unavailable(filters, str(exc))
+        return self._count_ok(count, capped, filters, (
+            f"Count of distinct vendor-invoice accounting documents (doc type KR) posted "
+            f"in this fiscal period, computed from up to {self._COUNT_CAP} matching line "
+            "items" + (" (truncated — there may be more)" if capped else "") + "."
+        ))
+
+    def count_goods_receipts(
+        self, period: str | None = None, date_from: str | None = None, date_to: str | None = None,
+        purchase_order: str | None = None,
+    ) -> dict:
+        """Count of DISTINCT goods-receipt (material) documents posted in the
+        given window, optionally scoped to one PO — "how many goods receipts
+        were posted this week". Does NOT filter to "against open POs" — that
+        would need a per-PO status join across a potentially large,
+        unbounded result set; the note says so, don't imply it's applied.
+        """
+        date_range = _resolve_date_range(period, date_from, date_to)
+        clauses = ["GoodsMovementIsCancelled eq false"]
+        if date_range:
+            clauses.append(_date_range_filter("PostingDate", *date_range))
+        if purchase_order:
+            clauses.append(f"PurchaseOrder eq {_lit(purchase_order)}")
+        filters = {**self._echo_dates(period, date_range), "purchaseOrder": purchase_order}
+        try:
+            count, capped = self._count_rows(
+                "goods_receipt_item", select=("MaterialDocument", "MaterialDocumentYear"),
+                filt=" and ".join(clauses), dedup_keys=("MaterialDocument", "MaterialDocumentYear"),
+            )
+        except S4HANAError as exc:
+            return self._count_unavailable(filters, str(exc))
+        return self._count_ok(count, capped, filters, (
+            f"Count of distinct (non-cancelled) goods-receipt documents in this window, "
+            f"computed from up to {self._COUNT_CAP} matching line items"
+            + (" (truncated — there may be more)" if capped else "") + ". NOT filtered to "
+            "POs that are still open — counts all matching receipts regardless of the "
+            "PO's completion status."
+        ))
+
+    def count_pos_overdue_without_goods_receipt(self, cap_purchase_orders: int = 30) -> dict:
+        """Best-effort, EXPLICITLY SAMPLED count of purchase orders with an
+        overdue delivery schedule line and no goods receipt posted yet —
+        "how many POs are overdue with no GR". There is no join/aggregate API
+        for this on an on-prem tenant, so this is NOT exhaustive: it samples
+        the first ``cap_purchase_orders`` distinct POs (earliest overdue
+        delivery date first) out of up to 100 overdue schedule lines, then
+        issues one existence-check GR lookup per sampled PO — slower than the
+        other count tools by design (one extra HTTP round trip per sampled
+        PO), approved as an explicit trade-off over a report-only handoff.
+        """
+        filt = f"ScheduleLineDeliveryDate lt {_dt_literal(date.today())}"
+        try:
+            schedule_lines, _ = _paged_fetch(
+                lambda skip, top: self._capability_query(
+                    "purchase_order_schedule_line", select=("PurchaseOrder", "ScheduleLineDeliveryDate"),
+                    filt=filt, top=top, skip=skip, orderby="ScheduleLineDeliveryDate asc",
+                ),
+                page_size=50, max_pages=2,
+            )
+        except S4HANAError as exc:
+            return self._count_unavailable({"capPurchaseOrders": cap_purchase_orders}, str(exc))
+        sampled: list[str] = []
+        for line in schedule_lines:
+            po = line.get("PurchaseOrder")
+            if po and po not in sampled:
+                sampled.append(po)
+            if len(sampled) >= cap_purchase_orders:
+                break
+        without_gr = 0
+        for po in sampled:
+            try:
+                gr_rows = self._capability_query(
+                    "goods_receipt_item", select=("PurchaseOrder",),
+                    filt=f"PurchaseOrder eq {_lit(po)}", top=1,
+                )
+            except S4HANAError:
+                continue  # can't tell for this one PO -- skip it rather than guess
+            if not gr_rows:
+                without_gr += 1
+        return {
+            "count": without_gr,
+            "capped": True,
+            "connected": True,
+            "scannedPurchaseOrders": len(sampled),
+            "filters": {"capPurchaseOrders": cap_purchase_orders},
+            "note": (
+                f"NOT an exhaustive count — sampled the first {len(sampled)} distinct "
+                "purchase orders with an overdue delivery schedule line (earliest overdue "
+                "date first) and checked each for a goods receipt. There may be more "
+                "overdue POs beyond this sample. Point the user at the standard 'PO "
+                "overdue / GR not yet posted' report for a definitive, complete list."
+            ),
+        }
+
+    def count_cleared_documents(
+        self, period: str | None = None, date_from: str | None = None, date_to: str | None = None,
+        company_code: str | None = None, vendor: str | None = None,
+    ) -> dict:
+        """Count of DISTINCT accounting documents cleared (``ClearingDate``)
+        in the given window — "how many accounting documents were cleared
+        last week", or scoped to one vendor, "how many invoices were paid to
+        vendor X this month" (``vendor=<supplier number>``). Counts
+        documents, not line items — one document commonly has multiple lines
+        on this cube.
+        """
+        date_range = _resolve_date_range(period, date_from, date_to)
+        clauses = []
+        if date_range:
+            clauses.append(_date_range_filter("ClearingDate", *date_range))
+        if company_code:
+            clauses.append(f"CompanyCode eq {_lit(company_code)}")
+        if vendor:
+            clauses.append(f"Supplier eq {_lit(vendor)}")
+        filters = {**self._echo_dates(period, date_range), "companyCode": company_code, "vendor": vendor}
+        try:
+            count, capped = self._count_rows(
+                "journal_entry_item", select=_CLEARED_DOCS_SELECT, filt=" and ".join(clauses) or None,
+                dedup_keys=("CompanyCode", "FiscalYear", "AccountingDocument"),
+            )
+        except S4HANAError as exc:
+            return self._count_unavailable(filters, str(exc))
+        return self._count_ok(count, capped, filters, (
+            f"Count of distinct accounting documents with a ClearingDate in this window, "
+            f"computed from up to {self._COUNT_CAP} matching line items"
+            + (" (truncated — there may be more)" if capped else "") + ". Not an official "
+            "payment-run report."
+        ))
+
+    def count_new_vendors(
+        self, period: str | None = None, date_from: str | None = None, date_to: str | None = None,
+    ) -> dict:
+        """Count of vendors (suppliers) created in the given window — "how
+        many new vendors were onboarded this quarter"."""
+        date_range = _resolve_date_range(period, date_from, date_to)
+        filt = _date_range_filter("CreationDate", *date_range) if date_range else None
+        filters = self._echo_dates(period, date_range)
+        try:
+            count, capped = self._count_rows("supplier", select=("Supplier",), filt=filt)
+        except S4HANAError as exc:
+            return self._count_unavailable(filters, str(exc))
+        return self._count_ok(count, capped, filters, (
+            f"Count of vendors with a CreationDate in this window, computed from up to "
+            f"{self._COUNT_CAP} matching suppliers" + (" (truncated — there may be more)" if capped else "") + "."
+        ))
+
+    def count_blocked_vendors(self) -> dict:
+        """Count of vendors currently blocked for posting or purchasing —
+        "how many vendors are blocked right now"."""
+        filt = "PurchasingIsBlockedForSupplier eq true or PostingIsBlocked eq true"
+        try:
+            count, capped = self._count_rows("supplier", select=("Supplier",), filt=filt)
+        except S4HANAError as exc:
+            return self._count_unavailable({}, str(exc))
+        return self._count_ok(count, capped, {}, (
+            f"Count of suppliers with PurchasingIsBlockedForSupplier or PostingIsBlocked "
+            f"set, computed from up to {self._COUNT_CAP} matching suppliers"
+            + (" (truncated — there may be more)" if capped else "") + "."
+        ))
+
+    def search_vendors_by_name(self, name: str, cap: int = 200) -> dict:
+        """Resolve a vendor NAME to supplier number(s) — every other tool
+        here (``count_purchase_orders(vendor=...)``, ``get_vendor_details``,
+        ...) takes a supplier NUMBER, not a name. Uses NO server-side name
+        filter (avoids an unverified ``substringof``/``tolower`` OData
+        function on this tenant): fetches up to ``cap`` suppliers and matches
+        case-insensitively client-side, so a name beyond the cap may be
+        missed on a tenant with many vendors.
+        """
+        needle = name.strip().lower()
+        try:
+            rows, capped = _paged_fetch(
+                lambda skip, top: self._capability_query(
+                    "supplier", select=("Supplier", "SupplierName"), filt=None, top=top, skip=skip,
+                ),
+                max_pages=self._pages_for(cap),
+            )
+        except S4HANAError as exc:
+            return {
+                "matches": [], "capped": False, "connected": False,
+                "message": f"Vendor search is not available on this system: {exc}",
+            }
+        matches = [
+            {"supplier": r.get("Supplier"), "supplierName": r.get("SupplierName")}
+            for r in rows if needle in str(r.get("SupplierName") or "").lower()
+        ]
+        return {
+            "matches": matches,
+            "capped": capped,
+            "connected": True,
+            "note": (
+                f"Case-insensitive substring match over up to {cap} suppliers fetched "
+                "from S/4HANA" + (" (truncated — there may be more suppliers not scanned)" if capped else "")
+                + f". Found {len(matches)} match(es) for {name!r}."
             ),
         }
 

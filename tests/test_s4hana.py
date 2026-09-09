@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import time
+from datetime import date
 
 import httpx
 import pytest
@@ -1248,3 +1249,277 @@ def test_ping_hits_business_partner_with_top_1(fake_s4):
     assert out == {"reachable": True, "rows": 1}
     assert fake_s4.requests[-1]["params"]["$top"] == "1"
     assert fake_s4.requests[-1]["params"]["$select"] == "BusinessPartner"
+
+
+# --- "how many" / volume-count support -------------------------------
+
+def test_resolve_date_range_none_when_nothing_given():
+    assert s4._resolve_date_range(None, None, None) is None
+
+
+def test_resolve_date_range_explicit_dates():
+    start, end = s4._resolve_date_range(None, "2026-01-01", "2026-01-31")
+    assert start == date(2026, 1, 1)
+    assert end == date(2026, 2, 1)  # exclusive end, one day past date_to
+
+
+def test_resolve_date_range_raises_on_bad_date_string():
+    with pytest.raises(ValueError):
+        s4._resolve_date_range(None, "not-a-date", None)
+
+
+def test_period_bounds_examples():
+    today = date(2026, 9, 9)  # a Wednesday
+    assert s4._period_bounds("today", today) == (date(2026, 9, 9), date(2026, 9, 10))
+    assert s4._period_bounds("this_week", today) == (date(2026, 9, 7), date(2026, 9, 14))
+    assert s4._period_bounds("last_week", today) == (date(2026, 8, 31), date(2026, 9, 7))
+    assert s4._period_bounds("this_month", today) == (date(2026, 9, 1), date(2026, 10, 1))
+    assert s4._period_bounds("last_month", today) == (date(2026, 8, 1), date(2026, 9, 1))
+    assert s4._period_bounds("this_quarter", today) == (date(2026, 7, 1), date(2026, 10, 1))
+    assert s4._period_bounds("this_year", today) == (date(2026, 1, 1), date(2027, 1, 1))
+    with pytest.raises(ValueError):
+        s4._period_bounds("someday", today)
+
+
+def test_paged_fetch_stops_on_short_page():
+    calls = []
+
+    def fetcher(skip, top):
+        calls.append((skip, top))
+        return [{"i": 1}, {"i": 2}]
+
+    rows, capped = s4._paged_fetch(fetcher, page_size=50, max_pages=4)
+    assert len(rows) == 2
+    assert capped is False
+    assert calls == [(0, 50)]
+
+
+def test_paged_fetch_capped_when_every_page_is_full():
+    calls = []
+
+    def fetcher(skip, top):
+        calls.append((skip, top))
+        return [{"i": i} for i in range(50)]
+
+    rows, capped = s4._paged_fetch(fetcher, page_size=50, max_pages=3)
+    assert len(rows) == 150
+    assert capped is True
+    assert calls == [(0, 50), (50, 50), (100, 50)]
+
+
+def test_count_distinct_dedupes_by_key_fields():
+    rows = [
+        {"CompanyCode": "1710", "AccountingDocument": "1"},
+        {"CompanyCode": "1710", "AccountingDocument": "1"},
+        {"CompanyCode": "1710", "AccountingDocument": "2"},
+    ]
+    assert s4._count_distinct(rows, ("CompanyCode", "AccountingDocument")) == 2
+
+
+def test_get_cost_object_actuals_pages_past_the_old_50_row_cap(fake_s4):
+    # Regression test for the bug _paged_fetch fixes: _query() hard-clamps a
+    # single call's $top to 50, so a full first page must trigger a second
+    # $skip-paginated call rather than silently stopping at 50.
+    full_page = [
+        {
+            "PurchasingDocument": "4500000030", "AmountInCompanyCodeCurrency": "10.00",
+            "DebitCreditCode": "S", "CompanyCodeCurrency": "USD",
+        }
+        for _ in range(50)
+    ]
+    fake_s4.routes["/A_OperationalAcctgDocItemCube"] = {"json": _d(full_page)}
+    out = S4HANAClient(_settings()).get_cost_object_actuals("purchase_order", "4500000030")
+    # Exclude resolve_capability's own $top=1 catalogue probe -- only look at
+    # the actual $top=50 paginated fetch calls.
+    skips = [
+        r["params"].get("$skip") for r in fake_s4.requests
+        if "A_OperationalAcctgDocItemCube" in r["url"] and r["params"].get("$top") == "50"
+    ]
+    assert skips == [None, "50", "100", "150"]  # 4 pages for the top=200 default
+    assert out["postingCount"] == 200
+    assert "truncated" in out["note"]
+
+
+def test_accounts_payable_summary_overdue_count_and_amount(fake_s4):
+    fake_s4.routes["/A_OperationalAcctgDocItemCube"] = {
+        "json": _d([
+            {
+                "CompanyCode": "1710", "Supplier": "100000", "AmountInCompanyCodeCurrency": "500.00",
+                "CompanyCodeCurrency": "USD", "DebitCreditCode": "H", "ClearingDate": None,
+                "NetDueDate": "/Date(946684800000)/",  # 2000-01-01, long past -> overdue
+            },
+            {
+                "CompanyCode": "1710", "Supplier": "100000", "AmountInCompanyCodeCurrency": "300.00",
+                "CompanyCodeCurrency": "USD", "DebitCreditCode": "H", "ClearingDate": None,
+                "NetDueDate": "/Date(4102444800000)/",  # 2100-01-01 -> not yet due
+            },
+        ])
+    }
+    out = S4HANAClient(_settings()).get_accounts_payable_summary("1710")
+    assert out["openItemCount"] == 2
+    assert out["overdueCount"] == 1
+    assert out["overdueAmount"] == 500.0
+
+
+def test_count_purchase_orders_filters_by_period_and_vendor(fake_s4):
+    fake_s4.routes["/A_PurchaseOrder"] = {
+        "json": _d([{"PurchaseOrder": "4500000001"}, {"PurchaseOrder": "4500000002"}])
+    }
+    out = S4HANAClient(_settings()).count_purchase_orders(period="this_week", vendor="100000")
+    start, end = s4._period_bounds("this_week")
+    expected = f"{s4._date_range_filter('CreationDate', start, end)} and Supplier eq '100000'"
+    assert fake_s4.requests[-1]["params"]["$filter"] == expected
+    assert out["count"] == 2
+    assert out["connected"] is True
+    assert out["capped"] is False
+
+
+def test_count_purchase_orders_pending_approval_only(fake_s4):
+    fake_s4.routes["/A_PurchaseOrder"] = {"json": _d([{"PurchaseOrder": "1"}])}
+    out = S4HANAClient(_settings()).count_purchase_orders(pending_approval=True)
+    assert fake_s4.requests[-1]["params"]["$filter"] == "ReleaseIsNotCompleted eq true"
+    assert out["count"] == 1
+
+
+def test_count_purchase_orders_unavailable_on_error(fake_s4):
+    fake_s4.routes["/A_PurchaseOrder"] = {"status": 500, "json": {"error": {"message": {"value": "boom"}}}}
+    out = S4HANAClient(_settings()).count_purchase_orders()
+    assert out["connected"] is False
+    assert out["count"] is None
+
+
+def test_count_purchase_requisitions_counts_rows(fake_s4):
+    fake_s4.routes["/A_PurchaseRequisitionHeader"] = {
+        "json": _d([{"PurchaseRequisition": "1"}, {"PurchaseRequisition": "2"}])
+    }
+    out = S4HANAClient(_settings()).count_purchase_requisitions(period="this_month")
+    assert out["count"] == 2
+    assert out["connected"] is True
+
+
+def test_count_purchase_requisitions_unavailable_when_403(fake_s4):
+    # Matches this tenant's known, pre-existing PR-service authorisation gap.
+    fake_s4.routes["/A_PurchaseRequisitionHeader"] = {
+        "status": 403, "json": {"error": {"message": {"value": "no auth"}}},
+    }
+    out = S4HANAClient(_settings()).count_purchase_requisitions()
+    assert out["connected"] is False
+
+
+def test_count_supplier_invoices_blocked_for_payment_filter(fake_s4):
+    fake_s4.routes["/A_SupplierInvoice"] = {
+        "json": _d([{"SupplierInvoice": "5100000016", "FiscalYear": "2017"}])
+    }
+    out = S4HANAClient(_settings()).count_supplier_invoices(blocked_for_payment=True)
+    assert fake_s4.requests[-1]["params"]["$filter"] == "PaymentBlockingReason ne ''"
+    assert out["count"] == 1
+
+
+def test_count_invoices_by_fiscal_period_dedupes_by_accounting_document(fake_s4):
+    fake_s4.routes["/A_OperationalAcctgDocItemCube"] = {
+        "json": _d([
+            {
+                "CompanyCode": "1710", "FiscalYear": "2017", "AccountingDocument": "1900000001",
+                "FiscalPeriod": "5", "AccountingDocumentType": "KR",
+            },
+            {
+                "CompanyCode": "1710", "FiscalYear": "2017", "AccountingDocument": "1900000001",
+                "FiscalPeriod": "5", "AccountingDocumentType": "KR",
+            },
+            {
+                "CompanyCode": "1710", "FiscalYear": "2017", "AccountingDocument": "1900000002",
+                "FiscalPeriod": "5", "AccountingDocumentType": "KR",
+            },
+        ])
+    }
+    out = S4HANAClient(_settings()).count_invoices_by_fiscal_period("1710", "2017", "5")
+    assert out["count"] == 2  # 3 line items, 2 distinct accounting documents
+    assert fake_s4.requests[-1]["params"]["$filter"] == (
+        "AccountingDocumentType eq 'KR' and CompanyCode eq '1710' "
+        "and FiscalYear eq '2017' and FiscalPeriod eq '5'"
+    )
+
+
+def test_count_goods_receipts_dedupes_and_excludes_cancelled(fake_s4):
+    fake_s4.routes["/A_MaterialDocumentItem"] = {
+        "json": _d([
+            {"MaterialDocument": "4900000121", "MaterialDocumentYear": "2017"},
+            {"MaterialDocument": "4900000121", "MaterialDocumentYear": "2017"},
+            {"MaterialDocument": "4900000122", "MaterialDocumentYear": "2017"},
+        ])
+    }
+    out = S4HANAClient(_settings()).count_goods_receipts(purchase_order="4500001234")
+    assert out["count"] == 2
+    filt = fake_s4.requests[-1]["params"]["$filter"]
+    assert "GoodsMovementIsCancelled eq false" in filt
+    assert "PurchaseOrder eq '4500001234'" in filt
+
+
+def test_count_pos_overdue_without_goods_receipt_all_missing(fake_s4):
+    fake_s4.routes["/A_PurchaseOrderScheduleLine"] = {
+        "json": _d([
+            {"PurchaseOrder": "4500000001", "ScheduleLineDeliveryDate": "/Date(1577836800000)/"},
+            {"PurchaseOrder": "4500000002", "ScheduleLineDeliveryDate": "/Date(1577836800000)/"},
+        ])
+    }
+    fake_s4.routes["/A_MaterialDocumentItem"] = {"json": _d([])}  # no GR for any PO
+    out = S4HANAClient(_settings()).count_pos_overdue_without_goods_receipt(cap_purchase_orders=10)
+    assert out["count"] == 2
+    assert out["scannedPurchaseOrders"] == 2
+    assert out["capped"] is True
+
+
+def test_count_pos_overdue_without_goods_receipt_all_received(fake_s4):
+    fake_s4.routes["/A_PurchaseOrderScheduleLine"] = {
+        "json": _d([{"PurchaseOrder": "4500000001", "ScheduleLineDeliveryDate": "/Date(1577836800000)/"}])
+    }
+    fake_s4.routes["/A_MaterialDocumentItem"] = {"json": _d([{"PurchaseOrder": "4500000001"}])}
+    out = S4HANAClient(_settings()).count_pos_overdue_without_goods_receipt()
+    assert out["count"] == 0
+    assert out["scannedPurchaseOrders"] == 1
+
+
+def test_count_cleared_documents_scoped_to_vendor_dedupes(fake_s4):
+    fake_s4.routes["/A_OperationalAcctgDocItemCube"] = {
+        "json": _d([
+            {
+                "CompanyCode": "1710", "FiscalYear": "2017", "AccountingDocument": "5100000016",
+                "Supplier": "100000", "ClearingDate": "/Date(1719360000000+0000)/",
+            },
+            {
+                "CompanyCode": "1710", "FiscalYear": "2017", "AccountingDocument": "5100000016",
+                "Supplier": "100000", "ClearingDate": "/Date(1719360000000+0000)/",
+            },
+        ])
+    }
+    out = S4HANAClient(_settings()).count_cleared_documents(period="this_month", vendor="100000")
+    assert out["count"] == 1
+    assert "Supplier eq '100000'" in fake_s4.requests[-1]["params"]["$filter"]
+
+
+def test_count_new_vendors_filters_by_creation_date(fake_s4):
+    fake_s4.routes["/A_Supplier"] = {"json": _d([{"Supplier": "1"}, {"Supplier": "2"}])}
+    out = S4HANAClient(_settings()).count_new_vendors(period="this_quarter")
+    assert out["count"] == 2
+    assert "CreationDate ge datetime'" in fake_s4.requests[-1]["params"]["$filter"]
+
+
+def test_count_blocked_vendors_boolean_or_filter(fake_s4):
+    fake_s4.routes["/A_Supplier"] = {"json": _d([{"Supplier": "1"}])}
+    out = S4HANAClient(_settings()).count_blocked_vendors()
+    assert fake_s4.requests[-1]["params"]["$filter"] == (
+        "PurchasingIsBlockedForSupplier eq true or PostingIsBlocked eq true"
+    )
+    assert out["count"] == 1
+
+
+def test_search_vendors_by_name_case_insensitive_substring(fake_s4):
+    fake_s4.routes["/A_Supplier"] = {
+        "json": _d([
+            {"Supplier": "1000502", "SupplierName": "Cosmo Energy Holdings Co Ltd"},
+            {"Supplier": "100000", "SupplierName": "Acme Corp"},
+        ])
+    }
+    out = S4HANAClient(_settings()).search_vendors_by_name("cosmo energy")
+    assert out["connected"] is True
+    assert [m["supplier"] for m in out["matches"]] == ["1000502"]

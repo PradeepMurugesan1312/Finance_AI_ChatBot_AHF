@@ -314,6 +314,116 @@ def _skills() -> list[AgentSkill]:
             examples=["What's our total accounts receivable for company code 1710?"],
         ),
         AgentSkill(
+            id="count_purchase_orders",
+            name="Count Purchase Orders",
+            description=(
+                "Count of purchase orders matching a scope: a date range "
+                "(created), pending approval, or one vendor — a computed, "
+                "possibly-capped count, not a list of the POs themselves."
+            ),
+            tags=["purchase order", "count", "volume", "read-only"],
+            examples=[
+                "How many purchase orders were created last week?",
+                "How many POs are still pending approval right now?",
+            ],
+        ),
+        AgentSkill(
+            id="count_purchase_requisitions",
+            name="Count Purchase Requisitions",
+            description=(
+                "Count of purchase requisitions created in a date range. May "
+                "report not-connected on this tenant (a known PR "
+                "authorisation gap), independent of this specific count."
+            ),
+            tags=["purchase requisition", "count", "volume", "read-only"],
+            examples=["How many purchase requisitions were raised this month?"],
+        ),
+        AgentSkill(
+            id="count_supplier_invoices",
+            name="Count Supplier Invoices",
+            description=(
+                "Count of supplier invoices matching a scope: a date range "
+                "(posted), payment-blocked status, one vendor, or one "
+                "company code."
+            ),
+            tags=["invoice", "count", "volume", "read-only"],
+            examples=[
+                "Count of supplier invoices received last week.",
+                "How many invoices are currently blocked for payment?",
+            ],
+        ),
+        AgentSkill(
+            id="count_invoices_by_fiscal_period",
+            name="Count Invoices By Fiscal Period",
+            description=(
+                "Count of vendor-invoice accounting documents posted in one "
+                "company code / fiscal year / fiscal period."
+            ),
+            tags=["invoice", "fiscal period", "count", "read-only"],
+            examples=["How many invoices were posted in fiscal period 5?"],
+        ),
+        AgentSkill(
+            id="count_goods_receipts",
+            name="Count Goods Receipts",
+            description=(
+                "Count of distinct goods-receipt documents posted in a date "
+                "range, optionally for one PO. Does not filter to receipts "
+                "against still-open POs."
+            ),
+            tags=["goods receipt", "count", "volume", "read-only"],
+            examples=["How many goods receipts were posted against open POs this week?"],
+        ),
+        AgentSkill(
+            id="count_pos_overdue_without_goods_receipt",
+            name="Count Overdue POs Without Goods Receipt",
+            description=(
+                "Best-effort, explicitly sampled (not exhaustive) count of "
+                "purchase orders with an overdue delivery date and no goods "
+                "receipt posted yet — slower than the other count tools."
+            ),
+            tags=["purchase order", "goods receipt", "overdue", "count", "read-only"],
+            examples=["How many POs have no goods receipt yet, even though they're past their delivery date?"],
+        ),
+        AgentSkill(
+            id="count_cleared_documents",
+            name="Count Cleared Accounting Documents",
+            description=(
+                "Count of distinct accounting documents cleared in a date "
+                "range, optionally for one vendor (e.g. 'invoices paid to "
+                "vendor X this month')."
+            ),
+            tags=["clearing", "payments", "count", "volume", "read-only"],
+            examples=[
+                "Count of accounting documents cleared last week.",
+                "How many invoices were paid out to vendor 1000502 this month?",
+            ],
+        ),
+        AgentSkill(
+            id="count_new_vendors",
+            name="Count New Vendors",
+            description="Count of vendors (suppliers) created in a date range.",
+            tags=["vendor", "onboarding", "count", "read-only"],
+            examples=["How many new vendors were onboarded this quarter?"],
+        ),
+        AgentSkill(
+            id="count_blocked_vendors",
+            name="Count Blocked Vendors",
+            description="Count of vendors currently blocked for posting or purchasing.",
+            tags=["vendor", "blocked", "count", "read-only"],
+            examples=["How many vendors are currently blocked for posting or purchasing?"],
+        ),
+        AgentSkill(
+            id="search_vendors_by_name",
+            name="Search Vendors By Name",
+            description=(
+                "Resolve a vendor/supplier NAME to its supplier number(s) — "
+                "every other vendor-related tool here needs a number, not a "
+                "name."
+            ),
+            tags=["vendor", "search", "read-only"],
+            examples=["How many purchase orders were created for vendor Cosmo Energy Holdings this year?"],
+        ),
+        AgentSkill(
             id="search_policy_docs",
             name="Answer Finance Policy Questions",
             description=(

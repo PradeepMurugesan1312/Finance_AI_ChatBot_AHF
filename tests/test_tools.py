@@ -35,6 +35,16 @@ def test_specs_and_handlers_are_in_lockstep():
         "get_gl_account_activity",
         "get_accounts_payable_summary",
         "get_accounts_receivable_summary",
+        "count_purchase_orders",
+        "count_purchase_requisitions",
+        "count_supplier_invoices",
+        "count_invoices_by_fiscal_period",
+        "count_goods_receipts",
+        "count_pos_overdue_without_goods_receipt",
+        "count_cleared_documents",
+        "count_new_vendors",
+        "count_blocked_vendors",
+        "search_vendors_by_name",
     }
     assert spec_names == set(TOOL_NAMES) | {"search_policy_docs"}
 
@@ -390,6 +400,125 @@ def test_dispatch_accounts_receivable_summary_connected_is_grounded():
     )
     assert s4.calls == [("get_accounts_receivable_summary", ("1710", "200000", None), {})]
     assert outcome.grounded is True
+
+
+def test_dispatch_count_purchase_orders():
+    s4 = FakeS4HANAClient(count_purchase_orders={"connected": True, "count": 4, "capped": False})
+    outcome = dispatch_tool(
+        "count_purchase_orders",
+        '{"period": "last_week", "vendor": "100000", "pending_approval": true}',
+        s4,
+    )
+    assert s4.calls == [("count_purchase_orders", ("last_week", None, None, "100000", True, None), {})]
+    assert outcome.grounded is True
+    assert outcome.content["count"] == 4
+
+
+def test_dispatch_count_purchase_orders_not_connected_is_not_grounded():
+    s4 = FakeS4HANAClient(count_purchase_orders={"connected": False, "count": None})
+    outcome = dispatch_tool("count_purchase_orders", "{}", s4)
+    assert s4.calls == [("count_purchase_orders", (None, None, None, None, None, None), {})]
+    assert outcome.grounded is False
+
+
+def test_dispatch_count_purchase_requisitions():
+    s4 = FakeS4HANAClient(count_purchase_requisitions={"connected": True, "count": 2})
+    outcome = dispatch_tool("count_purchase_requisitions", '{"period": "this_month"}', s4)
+    assert s4.calls == [("count_purchase_requisitions", ("this_month", None, None), {})]
+    assert outcome.grounded is True
+
+
+def test_dispatch_count_supplier_invoices_blocked_for_payment_flag():
+    s4 = FakeS4HANAClient(count_supplier_invoices={"connected": True, "count": 1})
+    outcome = dispatch_tool("count_supplier_invoices", '{"blocked_for_payment": true}', s4)
+    assert s4.calls == [("count_supplier_invoices", (None, None, None, True, None, None), {})]
+    assert outcome.grounded is True
+
+
+def test_dispatch_count_invoices_by_fiscal_period_requires_all_three_args():
+    s4 = FakeS4HANAClient()
+    missing = dispatch_tool("count_invoices_by_fiscal_period", '{"company_code": "1710"}', s4)
+    assert missing.grounded is False
+    assert "fiscal_year" in missing.content["error"]
+
+    s4 = FakeS4HANAClient(count_invoices_by_fiscal_period={"connected": True, "count": 6})
+    outcome = dispatch_tool(
+        "count_invoices_by_fiscal_period",
+        '{"company_code": "1710", "fiscal_year": "2017", "fiscal_period": "5"}',
+        s4,
+    )
+    assert s4.calls == [("count_invoices_by_fiscal_period", ("1710", "2017", "5"), {})]
+    assert outcome.grounded is True
+
+
+def test_dispatch_count_goods_receipts():
+    s4 = FakeS4HANAClient(count_goods_receipts={"connected": True, "count": 8})
+    outcome = dispatch_tool("count_goods_receipts", '{"period": "this_week", "purchase_order": "4500001234"}', s4)
+    assert s4.calls == [("count_goods_receipts", ("this_week", None, None, "4500001234"), {})]
+    assert outcome.grounded is True
+
+
+def test_dispatch_count_pos_overdue_without_goods_receipt_default_cap():
+    s4 = FakeS4HANAClient(
+        count_pos_overdue_without_goods_receipt={"connected": True, "count": 2, "scannedPurchaseOrders": 30}
+    )
+    outcome = dispatch_tool("count_pos_overdue_without_goods_receipt", "{}", s4)
+    assert s4.calls == [("count_pos_overdue_without_goods_receipt", (30,), {})]
+    assert outcome.grounded is True
+
+
+def test_dispatch_count_cleared_documents_scoped_to_vendor():
+    s4 = FakeS4HANAClient(count_cleared_documents={"connected": True, "count": 3})
+    outcome = dispatch_tool(
+        "count_cleared_documents", '{"period": "this_month", "vendor": "1000502"}', s4
+    )
+    assert s4.calls == [("count_cleared_documents", ("this_month", None, None, None, "1000502"), {})]
+    assert outcome.grounded is True
+
+
+def test_dispatch_count_new_vendors():
+    s4 = FakeS4HANAClient(count_new_vendors={"connected": True, "count": 5})
+    outcome = dispatch_tool("count_new_vendors", '{"period": "this_quarter"}', s4)
+    assert s4.calls == [("count_new_vendors", ("this_quarter", None, None), {})]
+    assert outcome.grounded is True
+
+
+def test_dispatch_count_blocked_vendors_takes_no_args():
+    s4 = FakeS4HANAClient(count_blocked_vendors={"connected": True, "count": 2})
+    outcome = dispatch_tool("count_blocked_vendors", "{}", s4)
+    assert s4.calls == [("count_blocked_vendors", (), {})]
+    assert outcome.grounded is True
+
+
+def test_dispatch_search_vendors_by_name():
+    s4 = FakeS4HANAClient(
+        search_vendors_by_name={"connected": True, "matches": [{"supplier": "1000502", "supplierName": "Cosmo Energy Holdings Co Ltd"}]}
+    )
+    outcome = dispatch_tool("search_vendors_by_name", '{"name": "Cosmo Energy"}', s4)
+    assert s4.calls == [("search_vendors_by_name", ("Cosmo Energy",), {})]
+    assert outcome.grounded is True
+
+    s4b = FakeS4HANAClient(search_vendors_by_name={"connected": True, "matches": []})
+    no_match = dispatch_tool("search_vendors_by_name", '{"name": "Nonexistent Corp"}', s4b)
+    assert no_match.grounded is False  # connected, but nothing matched
+
+
+def test_dispatch_tool_reports_invalid_argument_instead_of_raising(monkeypatch):
+    # A malformed argument (e.g. an unparsable date_from/date_to, or an
+    # unknown `period`) must never escape dispatch_tool as a raw ValueError --
+    # it's a model mistake, not an S/4HANA failure. Exercised via a stand-in
+    # handler since FakeS4HANAClient doesn't do real date parsing; the actual
+    # ValueError source (S4HANAClient._resolve_date_range) is covered in
+    # test_s4hana.py.
+    import ahf_finance_agent.tools as tools_module
+
+    def _raises(client, args):
+        raise ValueError("unknown period 'sometime'")
+
+    monkeypatch.setitem(tools_module._HANDLERS, "count_purchase_orders", _raises)
+    outcome = dispatch_tool("count_purchase_orders", "{}", FakeS4HANAClient())
+    assert outcome.grounded is False
+    assert "invalid tool argument" in outcome.content["error"]
 
 
 def test_unknown_tool_is_reported():

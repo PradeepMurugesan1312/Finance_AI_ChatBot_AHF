@@ -175,3 +175,33 @@ class FakeS4HANAClient:
 
     def get_accounts_receivable_summary(self, *a, **k):
         return self._canned("get_accounts_receivable_summary", *a, **k) or {"connected": False}
+
+    def count_purchase_orders(self, *a, **k):
+        return self._canned("count_purchase_orders", *a, **k) or {"connected": False}
+
+    def count_purchase_requisitions(self, *a, **k):
+        return self._canned("count_purchase_requisitions", *a, **k) or {"connected": False}
+
+    def count_supplier_invoices(self, *a, **k):
+        return self._canned("count_supplier_invoices", *a, **k) or {"connected": False}
+
+    def count_invoices_by_fiscal_period(self, *a, **k):
+        return self._canned("count_invoices_by_fiscal_period", *a, **k) or {"connected": False}
+
+    def count_goods_receipts(self, *a, **k):
+        return self._canned("count_goods_receipts", *a, **k) or {"connected": False}
+
+    def count_pos_overdue_without_goods_receipt(self, *a, **k):
+        return self._canned("count_pos_overdue_without_goods_receipt", *a, **k) or {"connected": False}
+
+    def count_cleared_documents(self, *a, **k):
+        return self._canned("count_cleared_documents", *a, **k) or {"connected": False}
+
+    def count_new_vendors(self, *a, **k):
+        return self._canned("count_new_vendors", *a, **k) or {"connected": False}
+
+    def count_blocked_vendors(self, *a, **k):
+        return self._canned("count_blocked_vendors", *a, **k) or {"connected": False}
+
+    def search_vendors_by_name(self, *a, **k):
+        return self._canned("search_vendors_by_name", *a, **k) or {"connected": False, "matches": []}

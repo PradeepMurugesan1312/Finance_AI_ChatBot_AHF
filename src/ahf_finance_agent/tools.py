@@ -81,6 +81,18 @@ def _int_arg(a: dict, key: str, default: int, lo: int, hi: int) -> int:
         return default
 
 
+def _bool_arg(a: dict, key: str) -> bool | None:
+    """Optional boolean tool argument — ``None`` when the model omitted it
+    (as opposed to explicitly passing false), so callers can tell "not asked
+    about" apart from "asked and false"."""
+    raw = a.get(key)
+    if raw is None or raw == "":
+        return None
+    if isinstance(raw, bool):
+        return raw
+    return str(raw).strip().lower() in ("true", "1", "yes")
+
+
 def _search_invoices_by_vendor(c: S4HANAClient, a: dict) -> ToolOutcome:
     limit = _int_arg(a, "limit", 10, 1, 50)
     skip = _int_arg(a, "skip", 0, 0, 10000)
@@ -194,6 +206,77 @@ def _get_accounts_receivable_summary(c: S4HANAClient, a: dict) -> ToolOutcome:
     return ToolOutcome(result, grounded=bool(result.get("connected")))
 
 
+# -- "how many" / volume-count tools ------------------------------------
+
+def _count_purchase_orders(c: S4HANAClient, a: dict) -> ToolOutcome:
+    result = c.count_purchase_orders(
+        a.get("period") or None, a.get("date_from") or None, a.get("date_to") or None,
+        a.get("vendor") or None, _bool_arg(a, "pending_approval"), a.get("company_code") or None,
+    )
+    return ToolOutcome(result, grounded=bool(result.get("connected")))
+
+
+def _count_purchase_requisitions(c: S4HANAClient, a: dict) -> ToolOutcome:
+    result = c.count_purchase_requisitions(
+        a.get("period") or None, a.get("date_from") or None, a.get("date_to") or None,
+    )
+    return ToolOutcome(result, grounded=bool(result.get("connected")))
+
+
+def _count_supplier_invoices(c: S4HANAClient, a: dict) -> ToolOutcome:
+    result = c.count_supplier_invoices(
+        a.get("period") or None, a.get("date_from") or None, a.get("date_to") or None,
+        _bool_arg(a, "blocked_for_payment"), a.get("vendor") or None, a.get("company_code") or None,
+    )
+    return ToolOutcome(result, grounded=bool(result.get("connected")))
+
+
+def _count_invoices_by_fiscal_period(c: S4HANAClient, a: dict) -> ToolOutcome:
+    result = c.count_invoices_by_fiscal_period(
+        _req(a, "company_code"), _req(a, "fiscal_year"), _req(a, "fiscal_period"),
+    )
+    return ToolOutcome(result, grounded=bool(result.get("connected")))
+
+
+def _count_goods_receipts(c: S4HANAClient, a: dict) -> ToolOutcome:
+    result = c.count_goods_receipts(
+        a.get("period") or None, a.get("date_from") or None, a.get("date_to") or None,
+        a.get("purchase_order") or None,
+    )
+    return ToolOutcome(result, grounded=bool(result.get("connected")))
+
+
+def _count_pos_overdue_without_goods_receipt(c: S4HANAClient, a: dict) -> ToolOutcome:
+    cap = _int_arg(a, "cap_purchase_orders", 30, 1, 100)
+    result = c.count_pos_overdue_without_goods_receipt(cap)
+    return ToolOutcome(result, grounded=bool(result.get("connected")))
+
+
+def _count_cleared_documents(c: S4HANAClient, a: dict) -> ToolOutcome:
+    result = c.count_cleared_documents(
+        a.get("period") or None, a.get("date_from") or None, a.get("date_to") or None,
+        a.get("company_code") or None, a.get("vendor") or None,
+    )
+    return ToolOutcome(result, grounded=bool(result.get("connected")))
+
+
+def _count_new_vendors(c: S4HANAClient, a: dict) -> ToolOutcome:
+    result = c.count_new_vendors(
+        a.get("period") or None, a.get("date_from") or None, a.get("date_to") or None,
+    )
+    return ToolOutcome(result, grounded=bool(result.get("connected")))
+
+
+def _count_blocked_vendors(c: S4HANAClient, a: dict) -> ToolOutcome:
+    result = c.count_blocked_vendors()
+    return ToolOutcome(result, grounded=bool(result.get("connected")))
+
+
+def _search_vendors_by_name(c: S4HANAClient, a: dict) -> ToolOutcome:
+    result = c.search_vendors_by_name(_req(a, "name"))
+    return ToolOutcome(result, grounded=bool(result.get("connected")) and bool(result.get("matches")))
+
+
 _HANDLERS: dict[str, Callable[[S4HANAClient, dict], ToolOutcome]] = {
     "get_invoice_status": _get_invoice_status,
     "get_invoice_items": _get_invoice_items,
@@ -218,6 +301,16 @@ _HANDLERS: dict[str, Callable[[S4HANAClient, dict], ToolOutcome]] = {
     "get_gl_account_activity": _get_gl_account_activity,
     "get_accounts_payable_summary": _get_accounts_payable_summary,
     "get_accounts_receivable_summary": _get_accounts_receivable_summary,
+    "count_purchase_orders": _count_purchase_orders,
+    "count_purchase_requisitions": _count_purchase_requisitions,
+    "count_supplier_invoices": _count_supplier_invoices,
+    "count_invoices_by_fiscal_period": _count_invoices_by_fiscal_period,
+    "count_goods_receipts": _count_goods_receipts,
+    "count_pos_overdue_without_goods_receipt": _count_pos_overdue_without_goods_receipt,
+    "count_cleared_documents": _count_cleared_documents,
+    "count_new_vendors": _count_new_vendors,
+    "count_blocked_vendors": _count_blocked_vendors,
+    "search_vendors_by_name": _search_vendors_by_name,
 }
 
 
@@ -532,15 +625,17 @@ TOOL_SPECS: list[dict] = [
     _fn(
         "get_accounts_payable_summary",
         "PORTFOLIO-level AP question — use this for 'how much do we owe', 'what's "
-        "our total accounts payable', 'how many open vendor invoices are there' "
-        "for a company code (optionally one vendor), as opposed to every other AP "
-        "tool here which needs one specific invoice number. Computes open (not yet "
-        "cleared) vendor-subledger postings from live data: openItemCount and "
-        "netOpenAmount (positive = amount owed). NOT an official AP aging report — "
-        "no day-based aging buckets, capped at the most recent ~50 postings scanned "
-        "(under-counts if there are more). Always relay the note verbatim and point "
-        "to the AP aging report / FBL1N for a definitive figure — treat this as "
-        "directional, not final.",
+        "our total accounts payable', 'how many open vendor invoices are there', "
+        "'how many invoices are overdue for payment' for a company code (optionally "
+        "one vendor), as opposed to every other AP tool here which needs one "
+        "specific invoice number. Computes open (not yet cleared) vendor-subledger "
+        "postings from live data: openItemCount and netOpenAmount (positive = "
+        "amount owed), plus overdueCount/overdueAmount (the subset already past "
+        "NetDueDate). NOT an official AP aging report — no day-based aging buckets, "
+        "capped at the most recent ~200 postings scanned (under-counts if there are "
+        "more — the note says when it was truncated). Always relay the note "
+        "verbatim and point to the AP aging report / FBL1N for a definitive figure "
+        "— treat this as directional, not final.",
         {
             "company_code": {"type": "string", "description": "Company code, e.g. 1710"},
             "vendor": {"type": "string", "description": "Optional supplier/vendor number to scope to one vendor."},
@@ -559,13 +654,187 @@ TOOL_SPECS: list[dict] = [
         "expected and should be relayed honestly (fall back to search_policy_docs "
         "for AR policy/process and hand off for the live figure), not treated as a "
         "tool error. When connected=true, same caveats as the AP version apply: "
-        "not an official aging report, capped at ~50 postings, treat as directional.",
+        "not an official aging report, capped at ~200 postings, treat as directional.",
         {
             "company_code": {"type": "string", "description": "Company code, e.g. 1710"},
             "customer": {"type": "string", "description": "Optional customer number to scope to one customer."},
             "fiscal_year": {"type": "string", "description": "Optional 4-digit fiscal year."},
         },
         ["company_code"],
+    ),
+    # -- "how many" / volume-count tools ------------------------------
+    # Shared conventions across all of these: {count, capped, connected,
+    # filters, note} on success ({count: null, connected: false, message} on
+    # a lookup failure) — always relay capped/note verbatim ("at least N",
+    # never a confident "exactly N" once capped=true). `period` is a
+    # shorthand ("this_week" etc); pass explicit date_from/date_to
+    # (YYYY-MM-DD) instead for anything else the user names. Every date-range
+    # and boolean filter behind these is a first use on this tenant — a
+    # connected=false result may mean the assumption needs a live fix, not
+    # that the question has no answer.
+    _fn(
+        "count_purchase_orders",
+        "Count of purchase orders matching a scope — 'how many POs were created "
+        "last week', 'how many POs are pending approval right now', 'how many POs "
+        "for vendor X this year'. vendor is a supplier NUMBER — if the user names a "
+        "vendor, call search_vendors_by_name first to resolve it. pending_approval="
+        "true filters to POs whose release is not yet complete.",
+        {
+            "period": {
+                "type": "string",
+                "enum": ["today", "this_week", "last_week", "this_month", "last_month", "this_quarter", "this_year"],
+                "description": "Shorthand date range on PO creation date. Omit if the user gives explicit dates or no date at all.",
+            },
+            "date_from": {"type": "string", "description": "Explicit start date (YYYY-MM-DD), inclusive. Use instead of period for a range period doesn't cover."},
+            "date_to": {"type": "string", "description": "Explicit end date (YYYY-MM-DD), inclusive."},
+            "vendor": {"type": "string", "description": "Optional supplier/vendor NUMBER to scope to one vendor."},
+            "pending_approval": {"type": "boolean", "description": "true = only POs whose release/approval is not yet complete."},
+            "company_code": {"type": "string", "description": "Optional company code, e.g. 1710."},
+        },
+        [],
+    ),
+    _fn(
+        "count_purchase_requisitions",
+        "Count of purchase requisitions created in a date range — 'how many PRs "
+        "were raised this month'. On this tenant the PR service may report "
+        "connected=false (a known, pre-existing authorisation gap, not specific to "
+        "this count) — relay that plainly rather than implying zero.",
+        {
+            "period": {
+                "type": "string",
+                "enum": ["today", "this_week", "last_week", "this_month", "last_month", "this_quarter", "this_year"],
+                "description": "Shorthand date range on PR creation date.",
+            },
+            "date_from": {"type": "string", "description": "Explicit start date (YYYY-MM-DD)."},
+            "date_to": {"type": "string", "description": "Explicit end date (YYYY-MM-DD)."},
+        },
+        [],
+    ),
+    _fn(
+        "count_supplier_invoices",
+        "Count of supplier invoices matching a scope — 'how many invoices were "
+        "received last week', 'how many invoices are currently blocked for "
+        "payment'. Date range applies to posting date. Do NOT use this for 'how "
+        "many invoices were posted in fiscal period N' — use "
+        "count_invoices_by_fiscal_period for that (this tool has no fiscal-period "
+        "filter).",
+        {
+            "period": {
+                "type": "string",
+                "enum": ["today", "this_week", "last_week", "this_month", "last_month", "this_quarter", "this_year"],
+                "description": "Shorthand date range on invoice posting date.",
+            },
+            "date_from": {"type": "string", "description": "Explicit start date (YYYY-MM-DD)."},
+            "date_to": {"type": "string", "description": "Explicit end date (YYYY-MM-DD)."},
+            "blocked_for_payment": {"type": "boolean", "description": "true = only invoices with a payment block set."},
+            "vendor": {"type": "string", "description": "Optional supplier/vendor number to scope to one vendor."},
+            "company_code": {"type": "string", "description": "Optional company code, e.g. 1710."},
+        },
+        [],
+    ),
+    _fn(
+        "count_invoices_by_fiscal_period",
+        "Count of vendor invoices posted in a specific fiscal period — 'how many "
+        "invoices were posted in fiscal period 5 for company code 1710, fiscal "
+        "year 2017'. Needs all three of company_code, fiscal_year, fiscal_period "
+        "(no date-range shorthand here — fiscal periods aren't calendar months).",
+        {
+            "company_code": {"type": "string", "description": "Company code, e.g. 1710"},
+            "fiscal_year": {"type": "string", "description": "4-digit fiscal year, e.g. 2017"},
+            "fiscal_period": {"type": "string", "description": "Fiscal period number, e.g. 5"},
+        },
+        ["company_code", "fiscal_year", "fiscal_period"],
+    ),
+    _fn(
+        "count_goods_receipts",
+        "Count of distinct goods-receipt documents posted in a date range, "
+        "optionally for one PO — 'how many goods receipts were posted this week'. "
+        "Does NOT filter to receipts against still-open POs — it counts every "
+        "matching (non-cancelled) receipt regardless of the PO's completion "
+        "status; say so if the user's question implied that scoping.",
+        {
+            "period": {
+                "type": "string",
+                "enum": ["today", "this_week", "last_week", "this_month", "last_month", "this_quarter", "this_year"],
+                "description": "Shorthand date range on goods-receipt posting date.",
+            },
+            "date_from": {"type": "string", "description": "Explicit start date (YYYY-MM-DD)."},
+            "date_to": {"type": "string", "description": "Explicit end date (YYYY-MM-DD)."},
+            "purchase_order": {"type": "string", "description": "Optional PO number to scope to one PO."},
+        },
+        [],
+    ),
+    _fn(
+        "count_pos_overdue_without_goods_receipt",
+        "Best-effort, EXPLICITLY SAMPLED (not exhaustive) count of purchase orders "
+        "with an overdue delivery schedule line and no goods receipt yet — 'how "
+        "many POs are overdue with no goods receipt'. Slower than the other count "
+        "tools (checks each sampled PO individually) and always returns a "
+        "sample-based figure — relay scannedPurchaseOrders and the note verbatim, "
+        "phrase the answer as 'at least N among the first M overdue POs checked', "
+        "never a confident total.",
+        {
+            "cap_purchase_orders": {
+                "type": "integer",
+                "description": "How many distinct overdue POs to sample (default 30, max 100). Higher is slower.",
+            },
+        },
+        [],
+    ),
+    _fn(
+        "count_cleared_documents",
+        "Count of distinct accounting documents cleared in a date range — 'how "
+        "many accounting documents were cleared last week', or scoped to one "
+        "vendor, 'how many invoices were paid to vendor X this month' (pass "
+        "vendor=<supplier number>). Date range applies to the clearing date.",
+        {
+            "period": {
+                "type": "string",
+                "enum": ["today", "this_week", "last_week", "this_month", "last_month", "this_quarter", "this_year"],
+                "description": "Shorthand date range on clearing date.",
+            },
+            "date_from": {"type": "string", "description": "Explicit start date (YYYY-MM-DD)."},
+            "date_to": {"type": "string", "description": "Explicit end date (YYYY-MM-DD)."},
+            "company_code": {"type": "string", "description": "Optional company code, e.g. 1710."},
+            "vendor": {"type": "string", "description": "Optional supplier/vendor number — use for 'paid to vendor X'."},
+        },
+        [],
+    ),
+    _fn(
+        "count_new_vendors",
+        "Count of vendors created in a date range — 'how many new vendors were "
+        "onboarded this quarter'.",
+        {
+            "period": {
+                "type": "string",
+                "enum": ["today", "this_week", "last_week", "this_month", "last_month", "this_quarter", "this_year"],
+                "description": "Shorthand date range on vendor creation date.",
+            },
+            "date_from": {"type": "string", "description": "Explicit start date (YYYY-MM-DD)."},
+            "date_to": {"type": "string", "description": "Explicit end date (YYYY-MM-DD)."},
+        },
+        [],
+    ),
+    _fn(
+        "count_blocked_vendors",
+        "Count of vendors currently blocked for posting or purchasing — 'how many "
+        "vendors are blocked right now'. No arguments.",
+        {},
+        [],
+    ),
+    _fn(
+        "search_vendors_by_name",
+        "Resolve a vendor/supplier NAME to its supplier number(s) — every other "
+        "tool here needs a NUMBER, not a name. Use this first whenever the user "
+        "names a vendor by name instead of by number (e.g. before "
+        "count_purchase_orders(vendor=...) or get_vendor_details). Client-side "
+        "substring match over a capped sample of suppliers — if it returns no "
+        "matches, say so rather than assuming the vendor doesn't exist; a very "
+        "large tenant could have more suppliers than the sample covers.",
+        {
+            "name": {"type": "string", "description": "Vendor name or partial name, as the user wrote it."},
+        },
+        ["name"],
     ),
 ]
 
@@ -623,6 +892,13 @@ def dispatch_tool(name: str, raw_arguments: str | None, client: S4HANAClient) ->
     except S4HANAError as exc:
         logger.warning("tool %s failed: %s", name, exc)
         return ToolOutcome({"error": f"S/4HANA lookup failed: {exc}"}, grounded=False)
+    except ValueError as exc:
+        # A malformed argument the handler couldn't coerce (e.g. an unparsable
+        # date_from/date_to, or an unknown `period` value) — a model mistake,
+        # not an S/4HANA failure. Without this, it would propagate out of
+        # dispatch_tool despite this function's contract of never raising.
+        logger.warning("tool %s got an invalid argument: %s", name, exc)
+        return ToolOutcome({"error": f"invalid tool argument: {exc}"}, grounded=False)
 
     return outcome
 
