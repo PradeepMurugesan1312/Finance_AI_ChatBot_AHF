@@ -1847,6 +1847,21 @@ class S4HANAClient:
     # "note" on both summaries says so explicitly.
     _OPEN_ITEMS_TOP = 200
 
+    def _fetch_open_items(self, filt: str | None, cap: int | None = None) -> tuple[list[dict], bool]:
+        """Paginated fetch of journal_entry_item rows via _OPEN_ITEMS_SELECT —
+        shared by the AP/AR summaries and the open-items drill-down/analytics
+        tools below (list_open_invoices_for_vendor, get_largest_open_item,
+        get_ap_aging_summary, get_top_vendors_by_open_payable,
+        get_average_days_to_clear). One shared fetch means one place to fix
+        if this cube's field support ever changes."""
+        return _paged_fetch(
+            lambda skip, top: self._capability_query(
+                "journal_entry_item", select=_OPEN_ITEMS_SELECT, filt=filt,
+                top=top, skip=skip, orderby="PostingDate desc",
+            ),
+            max_pages=self._pages_for(cap or self._OPEN_ITEMS_TOP),
+        )
+
     def get_accounts_payable_summary(
         self, company_code: str, vendor: str | None = None, fiscal_year: str | None = None,
     ) -> dict:
@@ -1876,13 +1891,7 @@ class S4HANAClient:
         if fiscal_year:
             filt += f" and FiscalYear eq {_lit(fiscal_year)}"
         try:
-            items, capped = _paged_fetch(
-                lambda skip, page_top: self._capability_query(
-                    "journal_entry_item", select=_OPEN_ITEMS_SELECT, filt=filt,
-                    top=page_top, skip=skip, orderby="PostingDate desc",
-                ),
-                max_pages=self._pages_for(self._OPEN_ITEMS_TOP),
-            )
+            items, capped = self._fetch_open_items(filt)
         except S4HANAError as exc:
             return {
                 "companyCode": company_code, "vendor": vendor, "fiscalYear": fiscal_year,
@@ -1955,13 +1964,7 @@ class S4HANAClient:
         if fiscal_year:
             filt += f" and FiscalYear eq {_lit(fiscal_year)}"
         try:
-            items, capped = _paged_fetch(
-                lambda skip, page_top: self._capability_query(
-                    "journal_entry_item", select=_OPEN_ITEMS_SELECT, filt=filt,
-                    top=page_top, skip=skip, orderby="PostingDate desc",
-                ),
-                max_pages=self._pages_for(self._OPEN_ITEMS_TOP),
-            )
+            items, capped = self._fetch_open_items(filt)
         except S4HANAError as exc:
             return {
                 "companyCode": company_code, "customer": customer, "fiscalYear": fiscal_year,
@@ -2021,6 +2024,234 @@ class S4HANAClient:
                 "independently verified against a known customer invoice on this tenant; "
                 "sanity-check against FBL5N before relying on this figure. If there are "
                 "more open items than scanned, this under-counts."
+            ),
+        }
+
+    # -- AP open-items drill-down / analytics --------------------------
+    # All five reuse _fetch_open_items (the exact same journal_entry_item
+    # cube + _OPEN_ITEMS_SELECT fields already live-verified by
+    # get_accounts_payable_summary) rather than any new service or field —
+    # deliberately lower-risk than the count_* family above, which had to
+    # guess several new fields/filters. Same caveats throughout: computed
+    # from a capped, paginated scan, NOT an official AP aging report, and
+    # the debit/credit sign convention is inherited unverified from
+    # get_accounts_payable_summary.
+
+    def list_open_invoices_for_vendor(self, vendor: str, company_code: str | None = None, *, top: int = 20) -> dict:
+        """Open (uncleared) invoice-level accounting documents for a vendor —
+        drills get_accounts_payable_summary's aggregate down into the actual
+        invoices: "which invoices for vendor X are still unpaid". One row per
+        accounting document (its line items summed), oldest posting date
+        first.
+        """
+        filt = f"Supplier eq {_lit(vendor)}"
+        if company_code:
+            filt += f" and CompanyCode eq {_lit(company_code)}"
+        try:
+            items, capped = self._fetch_open_items(filt)
+        except S4HANAError as exc:
+            return {
+                "vendor": vendor, "companyCode": company_code, "connected": False, "invoices": [],
+                "message": f"Open-invoice lookup is not available on this system: {exc}",
+            }
+        open_lines = [it for it in items if _is_set(it.get("Supplier")) and not _is_set(it.get("ClearingDate"))]
+        by_doc: dict[tuple, dict] = {}
+        for ln in open_lines:
+            key = (ln.get("CompanyCode"), ln.get("FiscalYear"), ln.get("AccountingDocument"))
+            amt = _num(ln.get("AmountInCompanyCodeCurrency")) or 0.0
+            if str(ln.get("DebitCreditCode")).strip().upper() in ("H", "2", "C"):
+                amt = -amt
+            doc = by_doc.setdefault(key, {
+                "companyCode": key[0], "fiscalYear": key[1], "accountingDocument": key[2],
+                "amount": 0.0, "currency": ln.get("CompanyCodeCurrency"),
+                "postingDate": ln.get("PostingDate"), "netDueDate": ln.get("NetDueDate"),
+            })
+            doc["amount"] -= amt  # payable = credit; flip sign like get_accounts_payable_summary
+        now_ms = time.time() * 1000
+        invoices = sorted(by_doc.values(), key=lambda d: d["postingDate"] or "")
+        for inv in invoices:
+            inv["amount"] = _round(inv["amount"], 2)
+            inv["overdue"] = (_sap_date_ms(inv["netDueDate"]) or 0) < now_ms if _is_set(inv["netDueDate"]) else None
+        return {
+            "vendor": vendor, "companyCode": company_code, "connected": True,
+            "invoiceCount": len(invoices), "invoices": invoices[:top],
+            "note": (
+                f"Open (uncleared) accounting documents for this vendor, computed from up to "
+                f"{self._OPEN_ITEMS_TOP} matching postings"
+                + (" (truncated — there may be more)" if capped else "")
+                + f". Showing up to {top} of {len(invoices)} open documents found, oldest first. "
+                "NOT an official AP aging report."
+            ),
+        }
+
+    def get_largest_open_item(self, company_code: str, vendor: str | None = None) -> dict:
+        """The single largest open (uncleared) vendor invoice for a company
+        code (optionally one vendor) — "what's our largest unpaid invoice".
+        """
+        filt = f"CompanyCode eq {_lit(company_code)}"
+        if vendor:
+            filt += f" and Supplier eq {_lit(vendor)}"
+        try:
+            items, capped = self._fetch_open_items(filt)
+        except S4HANAError as exc:
+            return {
+                "companyCode": company_code, "vendor": vendor, "connected": False, "largest": None,
+                "message": f"Lookup is not available on this system: {exc}",
+            }
+        open_lines = [it for it in items if _is_set(it.get("Supplier")) and not _is_set(it.get("ClearingDate"))]
+        if not open_lines:
+            return {
+                "companyCode": company_code, "vendor": vendor, "connected": True, "largest": None,
+                "note": "No open items found in scope.",
+            }
+        largest = max(open_lines, key=lambda it: abs(_num(it.get("AmountInCompanyCodeCurrency")) or 0.0))
+        amt = _num(largest.get("AmountInCompanyCodeCurrency")) or 0.0
+        if str(largest.get("DebitCreditCode")).strip().upper() in ("H", "2", "C"):
+            amt = -amt
+        return {
+            "companyCode": company_code, "vendor": vendor, "connected": True,
+            "largest": {
+                "supplier": largest.get("Supplier"), "accountingDocument": largest.get("AccountingDocument"),
+                "fiscalYear": largest.get("FiscalYear"), "amount": _round(-amt, 2),
+                "currency": largest.get("CompanyCodeCurrency"), "postingDate": largest.get("PostingDate"),
+            },
+            "note": (
+                f"Largest open item among up to {self._OPEN_ITEMS_TOP} scanned postings"
+                + (" (truncated — there may be a larger one beyond the scan)." if capped else ".")
+            ),
+        }
+
+    _AGING_BUCKETS = ("current", "1-30", "31-60", "60+")
+
+    def get_ap_aging_summary(self, company_code: str, vendor: str | None = None) -> dict:
+        """Rough AP aging breakdown (current / 1-30 / 31-60 / 60+ days
+        overdue) for open vendor items in a company code — a lightweight
+        approximation of the real AP aging report (FBL1N), bucketed by days
+        past NetDueDate from the same capped open-items scan as
+        get_accounts_payable_summary.
+        """
+        filt = f"CompanyCode eq {_lit(company_code)}"
+        if vendor:
+            filt += f" and Supplier eq {_lit(vendor)}"
+        try:
+            items, capped = self._fetch_open_items(filt)
+        except S4HANAError as exc:
+            return {
+                "companyCode": company_code, "vendor": vendor, "connected": False, "buckets": None,
+                "message": f"Aging lookup is not available on this system: {exc}",
+            }
+        open_lines = [it for it in items if _is_set(it.get("Supplier")) and not _is_set(it.get("ClearingDate"))]
+        now_ms = time.time() * 1000
+        buckets = {b: {"count": 0, "amount": 0.0} for b in self._AGING_BUCKETS}
+        for ln in open_lines:
+            due_ms = _sap_date_ms(ln.get("NetDueDate"))
+            days_overdue = (now_ms - due_ms) / 86400000 if due_ms is not None else None
+            bucket = "current"
+            if days_overdue is not None:
+                if days_overdue > 60:
+                    bucket = "60+"
+                elif days_overdue > 30:
+                    bucket = "31-60"
+                elif days_overdue > 0:
+                    bucket = "1-30"
+            amt = _num(ln.get("AmountInCompanyCodeCurrency")) or 0.0
+            if str(ln.get("DebitCreditCode")).strip().upper() in ("H", "2", "C"):
+                amt = -amt
+            buckets[bucket]["count"] += 1
+            buckets[bucket]["amount"] -= amt
+        for b in buckets.values():
+            b["amount"] = _round(b["amount"], 2)
+        return {
+            "companyCode": company_code, "vendor": vendor, "connected": True,
+            "buckets": buckets, "postingsScanned": len(items),
+            "note": (
+                f"Rough aging breakdown from up to {self._OPEN_ITEMS_TOP} scanned open items"
+                + (" (truncated — there may be more)" if capped else "")
+                + " — bucketed by days past NetDueDate. NOT the official AP aging report "
+                "(FBL1N); no dispute status, no partial-clearing netting beyond debit/credit sign."
+            ),
+        }
+
+    def get_top_vendors_by_open_payable(self, company_code: str, *, top: int = 5) -> dict:
+        """Top vendors by total open (uncleared) payable amount for a company
+        code — "who are our top vendors by amount owed", grouped from the
+        same capped open-items scan as get_accounts_payable_summary.
+        """
+        filt = f"CompanyCode eq {_lit(company_code)}"
+        try:
+            items, capped = self._fetch_open_items(filt)
+        except S4HANAError as exc:
+            return {
+                "companyCode": company_code, "connected": False, "vendors": [],
+                "message": f"Lookup is not available on this system: {exc}",
+            }
+        open_lines = [it for it in items if _is_set(it.get("Supplier")) and not _is_set(it.get("ClearingDate"))]
+        by_vendor: dict[str, dict] = {}
+        for ln in open_lines:
+            supplier = ln.get("Supplier")
+            amt = _num(ln.get("AmountInCompanyCodeCurrency")) or 0.0
+            if str(ln.get("DebitCreditCode")).strip().upper() in ("H", "2", "C"):
+                amt = -amt
+            entry = by_vendor.setdefault(supplier, {
+                "supplier": supplier, "amount": 0.0,
+                "currency": ln.get("CompanyCodeCurrency"), "openItemCount": 0,
+            })
+            entry["amount"] -= amt
+            entry["openItemCount"] += 1
+        ranked = sorted(by_vendor.values(), key=lambda v: abs(v["amount"]), reverse=True)
+        for v in ranked:
+            v["amount"] = _round(v["amount"], 2)
+        return {
+            "companyCode": company_code, "connected": True,
+            "vendors": ranked[:top], "vendorCount": len(ranked),
+            "note": (
+                f"Top vendors by open payable amount, computed from up to {self._OPEN_ITEMS_TOP} "
+                "scanned postings" + (" (truncated — there may be more)" if capped else "")
+                + ". NOT an official AP aging report."
+            ),
+        }
+
+    def get_average_days_to_clear(self, vendor: str | None = None, company_code: str | None = None) -> dict:
+        """Average days between posting and clearing for CLEARED vendor
+        invoices in scope — "how long does it typically take us to pay
+        vendor X", a rough payment-cycle-time indicator computed from the
+        same capped journal-entry cube as the other AP tools. Best scoped by
+        vendor and/or company_code; unscoped scans tenant-wide (still capped).
+        """
+        clauses = []
+        if vendor:
+            clauses.append(f"Supplier eq {_lit(vendor)}")
+        if company_code:
+            clauses.append(f"CompanyCode eq {_lit(company_code)}")
+        filt = " and ".join(clauses) if clauses else None
+        try:
+            items, capped = self._fetch_open_items(filt)
+        except S4HANAError as exc:
+            return {
+                "vendor": vendor, "companyCode": company_code, "connected": False, "averageDays": None,
+                "message": f"Lookup is not available on this system: {exc}",
+            }
+        cleared = [it for it in items if _is_set(it.get("Supplier")) and _is_set(it.get("ClearingDate"))]
+        day_spans = []
+        for ln in cleared:
+            posted_ms = _sap_date_ms(ln.get("PostingDate"))
+            cleared_ms = _sap_date_ms(ln.get("ClearingDate"))
+            if posted_ms is not None and cleared_ms is not None and cleared_ms >= posted_ms:
+                day_spans.append((cleared_ms - posted_ms) / 86400000)
+        if not day_spans:
+            return {
+                "vendor": vendor, "companyCode": company_code, "connected": True, "averageDays": None,
+                "clearedItemsScanned": len(cleared),
+                "note": "No cleared items with both a posting and clearing date found in scope.",
+            }
+        return {
+            "vendor": vendor, "companyCode": company_code, "connected": True,
+            "averageDays": _round(sum(day_spans) / len(day_spans), 1), "clearedItemsScanned": len(day_spans),
+            "note": (
+                f"Average days from posting to clearing across {len(day_spans)} cleared postings "
+                f"in scope, out of up to {self._OPEN_ITEMS_TOP} scanned"
+                + (" (truncated — there may be more)" if capped else "")
+                + ". A rough payment-cycle-time indicator, not an official metric."
             ),
         }
 

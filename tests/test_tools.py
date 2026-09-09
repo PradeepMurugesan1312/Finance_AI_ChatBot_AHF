@@ -35,6 +35,11 @@ def test_specs_and_handlers_are_in_lockstep():
         "get_gl_account_activity",
         "get_accounts_payable_summary",
         "get_accounts_receivable_summary",
+        "list_open_invoices_for_vendor",
+        "get_largest_open_item",
+        "get_ap_aging_summary",
+        "get_top_vendors_by_open_payable",
+        "get_average_days_to_clear",
         "count_purchase_orders",
         "count_purchase_requisitions",
         "count_supplier_invoices",
@@ -399,6 +404,45 @@ def test_dispatch_accounts_receivable_summary_connected_is_grounded():
         "get_accounts_receivable_summary", '{"company_code": "1710", "customer": "200000"}', s4
     )
     assert s4.calls == [("get_accounts_receivable_summary", ("1710", "200000", None), {})]
+    assert outcome.grounded is True
+
+
+def test_dispatch_list_open_invoices_for_vendor():
+    s4 = FakeS4HANAClient(
+        list_open_invoices_for_vendor={"connected": True, "invoiceCount": 1, "invoices": [{"accountingDocument": "1"}]}
+    )
+    outcome = dispatch_tool(
+        "list_open_invoices_for_vendor", '{"vendor": "100000", "company_code": "1710"}', s4
+    )
+    assert s4.calls == [("list_open_invoices_for_vendor", ("100000", "1710"), {"top": 20})]
+    assert outcome.grounded is True
+
+
+def test_dispatch_get_largest_open_item():
+    s4 = FakeS4HANAClient(get_largest_open_item={"connected": True, "largest": {"amount": 500.0}})
+    outcome = dispatch_tool("get_largest_open_item", '{"company_code": "1710"}', s4)
+    assert s4.calls == [("get_largest_open_item", ("1710", None), {})]
+    assert outcome.grounded is True
+
+
+def test_dispatch_get_ap_aging_summary():
+    s4 = FakeS4HANAClient(get_ap_aging_summary={"connected": True, "buckets": {}})
+    outcome = dispatch_tool("get_ap_aging_summary", '{"company_code": "1710", "vendor": "100000"}', s4)
+    assert s4.calls == [("get_ap_aging_summary", ("1710", "100000"), {})]
+    assert outcome.grounded is True
+
+
+def test_dispatch_get_top_vendors_by_open_payable():
+    s4 = FakeS4HANAClient(get_top_vendors_by_open_payable={"connected": True, "vendors": []})
+    outcome = dispatch_tool("get_top_vendors_by_open_payable", '{"company_code": "1710"}', s4)
+    assert s4.calls == [("get_top_vendors_by_open_payable", ("1710",), {"top": 5})]
+    assert outcome.grounded is True
+
+
+def test_dispatch_get_average_days_to_clear():
+    s4 = FakeS4HANAClient(get_average_days_to_clear={"connected": True, "averageDays": 12.5})
+    outcome = dispatch_tool("get_average_days_to_clear", '{"vendor": "100000"}', s4)
+    assert s4.calls == [("get_average_days_to_clear", ("100000", None), {})]
     assert outcome.grounded is True
 
 

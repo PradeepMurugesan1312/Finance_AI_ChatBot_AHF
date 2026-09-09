@@ -206,6 +206,35 @@ def _get_accounts_receivable_summary(c: S4HANAClient, a: dict) -> ToolOutcome:
     return ToolOutcome(result, grounded=bool(result.get("connected")))
 
 
+# -- AP open-items drill-down / analytics tools --------------------------
+
+def _list_open_invoices_for_vendor(c: S4HANAClient, a: dict) -> ToolOutcome:
+    result = c.list_open_invoices_for_vendor(
+        _req(a, "vendor"), a.get("company_code") or None, top=_int_arg(a, "top", 20, 1, 100),
+    )
+    return ToolOutcome(result, grounded=bool(result.get("connected")))
+
+
+def _get_largest_open_item(c: S4HANAClient, a: dict) -> ToolOutcome:
+    result = c.get_largest_open_item(_req(a, "company_code"), a.get("vendor") or None)
+    return ToolOutcome(result, grounded=bool(result.get("connected")))
+
+
+def _get_ap_aging_summary(c: S4HANAClient, a: dict) -> ToolOutcome:
+    result = c.get_ap_aging_summary(_req(a, "company_code"), a.get("vendor") or None)
+    return ToolOutcome(result, grounded=bool(result.get("connected")))
+
+
+def _get_top_vendors_by_open_payable(c: S4HANAClient, a: dict) -> ToolOutcome:
+    result = c.get_top_vendors_by_open_payable(_req(a, "company_code"), top=_int_arg(a, "top", 5, 1, 20))
+    return ToolOutcome(result, grounded=bool(result.get("connected")))
+
+
+def _get_average_days_to_clear(c: S4HANAClient, a: dict) -> ToolOutcome:
+    result = c.get_average_days_to_clear(a.get("vendor") or None, a.get("company_code") or None)
+    return ToolOutcome(result, grounded=bool(result.get("connected")))
+
+
 # -- "how many" / volume-count tools ------------------------------------
 
 def _count_purchase_orders(c: S4HANAClient, a: dict) -> ToolOutcome:
@@ -301,6 +330,11 @@ _HANDLERS: dict[str, Callable[[S4HANAClient, dict], ToolOutcome]] = {
     "get_gl_account_activity": _get_gl_account_activity,
     "get_accounts_payable_summary": _get_accounts_payable_summary,
     "get_accounts_receivable_summary": _get_accounts_receivable_summary,
+    "list_open_invoices_for_vendor": _list_open_invoices_for_vendor,
+    "get_largest_open_item": _get_largest_open_item,
+    "get_ap_aging_summary": _get_ap_aging_summary,
+    "get_top_vendors_by_open_payable": _get_top_vendors_by_open_payable,
+    "get_average_days_to_clear": _get_average_days_to_clear,
     "count_purchase_orders": _count_purchase_orders,
     "count_purchase_requisitions": _count_purchase_requisitions,
     "count_supplier_invoices": _count_supplier_invoices,
@@ -661,6 +695,68 @@ TOOL_SPECS: list[dict] = [
             "fiscal_year": {"type": "string", "description": "Optional 4-digit fiscal year."},
         },
         ["company_code"],
+    ),
+    # -- AP open-items drill-down / analytics -------------------------
+    # All five reuse the same live-confirmed open-items data
+    # get_accounts_payable_summary uses (not a new field/service) — same
+    # caveats apply: computed, capped, NOT an official AP aging report.
+    _fn(
+        "list_open_invoices_for_vendor",
+        "List of open (unpaid) invoice-level accounting documents for a vendor "
+        "— 'which invoices for vendor X are still unpaid'. Drills down from "
+        "get_accounts_payable_summary's aggregate into the actual documents, "
+        "oldest first, each flagged overdue true/false/null. NOT an official "
+        "AP aging report.",
+        {
+            "vendor": {"type": "string", "description": "Supplier/vendor number."},
+            "company_code": {"type": "string", "description": "Optional company code, e.g. 1710."},
+            "top": {"type": "integer", "description": "Max invoices to return (default 20, max 100)."},
+        },
+        ["vendor"],
+    ),
+    _fn(
+        "get_largest_open_item",
+        "The single largest open (unpaid) vendor invoice for a company code, "
+        "optionally scoped to one vendor — 'what's our largest unpaid invoice'.",
+        {
+            "company_code": {"type": "string", "description": "Company code, e.g. 1710"},
+            "vendor": {"type": "string", "description": "Optional supplier/vendor number."},
+        },
+        ["company_code"],
+    ),
+    _fn(
+        "get_ap_aging_summary",
+        "Rough AP aging breakdown (current / 1-30 / 31-60 / 60+ days overdue) "
+        "for open vendor items in a company code, optionally one vendor — "
+        "'break down our open payables by aging bucket'. NOT the official AP "
+        "aging report (FBL1N) — always relay that caveat.",
+        {
+            "company_code": {"type": "string", "description": "Company code, e.g. 1710"},
+            "vendor": {"type": "string", "description": "Optional supplier/vendor number."},
+        },
+        ["company_code"],
+    ),
+    _fn(
+        "get_top_vendors_by_open_payable",
+        "Top vendors by total open (unpaid) amount for a company code — 'who "
+        "are our top vendors by amount owed'.",
+        {
+            "company_code": {"type": "string", "description": "Company code, e.g. 1710"},
+            "top": {"type": "integer", "description": "How many vendors to return (default 5, max 20)."},
+        },
+        ["company_code"],
+    ),
+    _fn(
+        "get_average_days_to_clear",
+        "Average days from posting to clearing for a vendor's (or company "
+        "code's) cleared invoices — 'on average how long does it take us to "
+        "pay vendor X'. A rough payment-cycle-time indicator, not an official "
+        "metric. Best scoped by vendor and/or company_code.",
+        {
+            "vendor": {"type": "string", "description": "Optional supplier/vendor number."},
+            "company_code": {"type": "string", "description": "Optional company code, e.g. 1710."},
+        },
+        [],
     ),
     # -- "how many" / volume-count tools ------------------------------
     # Shared conventions across all of these: {count, capped, connected,

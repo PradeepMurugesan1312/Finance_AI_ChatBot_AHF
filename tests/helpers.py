@@ -176,6 +176,21 @@ class FakeS4HANAClient:
     def get_accounts_receivable_summary(self, *a, **k):
         return self._canned("get_accounts_receivable_summary", *a, **k) or {"connected": False}
 
+    def list_open_invoices_for_vendor(self, *a, **k):
+        return self._canned("list_open_invoices_for_vendor", *a, **k) or {"connected": False, "invoices": []}
+
+    def get_largest_open_item(self, *a, **k):
+        return self._canned("get_largest_open_item", *a, **k) or {"connected": False, "largest": None}
+
+    def get_ap_aging_summary(self, *a, **k):
+        return self._canned("get_ap_aging_summary", *a, **k) or {"connected": False, "buckets": None}
+
+    def get_top_vendors_by_open_payable(self, *a, **k):
+        return self._canned("get_top_vendors_by_open_payable", *a, **k) or {"connected": False, "vendors": []}
+
+    def get_average_days_to_clear(self, *a, **k):
+        return self._canned("get_average_days_to_clear", *a, **k) or {"connected": False, "averageDays": None}
+
     def count_purchase_orders(self, *a, **k):
         return self._canned("count_purchase_orders", *a, **k) or {"connected": False}
 

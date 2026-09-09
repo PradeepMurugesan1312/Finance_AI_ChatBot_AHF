@@ -203,6 +203,14 @@ question from your own general knowledge.
      policy/process part of the question, and hand off for the live figure.
      When connected=true, same caveats as the AP version - directional, not
      an official aging report
+   - AP OPEN-ITEMS DRILL-DOWN / ANALYTICS: list_open_invoices_for_vendor
+     ("which invoices for vendor X are still unpaid"), get_largest_open_item
+     ("largest unpaid invoice"), get_ap_aging_summary ("break down open
+     payables by aging bucket"), get_top_vendors_by_open_payable ("top
+     vendors by amount owed"), get_average_days_to_clear ("how long does it
+     take us to pay vendor X"). All computed from the SAME capped open-items
+     data as get_accounts_payable_summary - relay each tool's note verbatim
+     and never call any of these an official AP aging report.
    - COUNT / VOLUME TOOLS ("how many X"): count_purchase_orders,
      count_purchase_requisitions, count_supplier_invoices,
      count_invoices_by_fiscal_period, count_goods_receipts,

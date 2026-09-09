@@ -314,6 +314,51 @@ def _skills() -> list[AgentSkill]:
             examples=["What's our total accounts receivable for company code 1710?"],
         ),
         AgentSkill(
+            id="list_open_invoices_for_vendor",
+            name="List Open Invoices For Vendor",
+            description=(
+                "List of open (unpaid) invoice-level accounting documents "
+                "for a vendor, drilling down from the AP summary into the "
+                "actual documents."
+            ),
+            tags=["accounts payable", "invoice", "read-only"],
+            examples=["Which invoices for vendor 100000 are still unpaid?"],
+        ),
+        AgentSkill(
+            id="get_largest_open_item",
+            name="Get Largest Open Item",
+            description="The single largest open (unpaid) vendor invoice for a company code.",
+            tags=["accounts payable", "invoice", "read-only"],
+            examples=["What's our largest unpaid invoice for company code 1710?"],
+        ),
+        AgentSkill(
+            id="get_ap_aging_summary",
+            name="Get AP Aging Summary",
+            description=(
+                "Rough AP aging breakdown (current / 1-30 / 31-60 / 60+ days "
+                "overdue) for open vendor items — not the official aging report."
+            ),
+            tags=["accounts payable", "aging", "read-only"],
+            examples=["Break down our open payables for company code 1710 by aging bucket."],
+        ),
+        AgentSkill(
+            id="get_top_vendors_by_open_payable",
+            name="Get Top Vendors By Open Payable",
+            description="Top vendors by total open (unpaid) amount for a company code.",
+            tags=["accounts payable", "vendor", "read-only"],
+            examples=["Who are our top 5 vendors by open payable amount for company code 1710?"],
+        ),
+        AgentSkill(
+            id="get_average_days_to_clear",
+            name="Get Average Days To Clear",
+            description=(
+                "Average days from posting to clearing for a vendor's "
+                "cleared invoices — a rough payment-cycle-time indicator."
+            ),
+            tags=["accounts payable", "payments", "read-only"],
+            examples=["On average, how many days does it take us to clear an invoice for vendor 100000?"],
+        ),
+        AgentSkill(
             id="count_purchase_orders",
             name="Count Purchase Orders",
             description=(
