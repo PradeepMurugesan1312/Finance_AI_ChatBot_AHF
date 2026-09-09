@@ -316,7 +316,7 @@ def test_dispatch_company_code_details():
 
 
 def test_dispatch_cost_center_details_with_optional_controlling_area():
-    s4 = FakeS4HANAClient(get_cost_center_details={"CostCenter": "1000", "PersonResponsible": "BPINST"})
+    s4 = FakeS4HANAClient(get_cost_center_details={"CostCenter": "1000", "CostCtrResponsiblePersonName": "BPINST"})
     outcome = dispatch_tool(
         "get_cost_center_details", '{"cost_center": "1000", "controlling_area": "1710"}', s4
     )

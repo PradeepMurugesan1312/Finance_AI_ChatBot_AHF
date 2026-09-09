@@ -1025,12 +1025,12 @@ def test_get_company_code_details(fake_s4):
 def test_get_cost_center_details_filters_and_returns_first_match(fake_s4):
     fake_s4.routes["/A_CostCenter"] = {
         "json": _d([{
-            "CostCenter": "1000", "ControllingArea": "1710", "PersonResponsible": "BPINST",
+            "CostCenter": "1000", "ControllingArea": "1710", "CostCtrResponsiblePersonName": "BPINST",
             "ProfitCenter": "YB100", "ValidityEndDate": "/Date(253402300799000+0000)/",
         }])
     }
     out = S4HANAClient(_settings()).get_cost_center_details("1000")
-    assert out["PersonResponsible"] == "BPINST"
+    assert out["CostCtrResponsiblePersonName"] == "BPINST"
     assert out["ProfitCenter"] == "YB100"
     assert out["isCurrentlyValid"] is True
     assert fake_s4.requests[-1]["params"]["$filter"] == "CostCenter eq '1000'"

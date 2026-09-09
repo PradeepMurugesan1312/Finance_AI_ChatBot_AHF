@@ -325,16 +325,15 @@ _COST_CENTER_SRV = "API_COSTCENTER_SRV"
 _COST_CENTER_SET = "A_CostCenter"
 # Master data (validity, ownership, currency) — distinct from
 # get_cost_object_actuals(), which sums live *postings* against the cost
-# centre. "PersonResponsible" is a guess (unverified) and dropped by self-heal
-# if wrong — see the A_ProfitCenter lesson below: this tenant names that field
-# differently per entity (A_ProfitCenter uses ProfitCtrResponsiblePersonName /
-# ProfitCtrResponsibleUser, not a plain "PersonResponsible"). The description
-# text (if any) lives behind a to_Text navigation, not inline, so it is not
-# requested here.
+# centre. Confirmed against this tenant's live data (2026-09): the field is
+# "CostCtrResponsiblePersonName", not a plain "PersonResponsible" — same
+# per-entity naming as A_ProfitCenter's ProfitCtrResponsiblePersonName /
+# ProfitCtrResponsibleUser. The description text (if any) lives behind a
+# to_Text navigation, not inline, so it is not requested here.
 _COST_CENTER_SELECT = (
     "CostCenter", "ControllingArea", "ValidityStartDate", "ValidityEndDate",
-    "CompanyCode", "PersonResponsible", "CostCenterCategory", "ProfitCenter",
-    "Currency",
+    "CompanyCode", "CostCtrResponsiblePersonName", "CostCenterCategory",
+    "ProfitCenter", "Currency",
 )
 
 _PROFIT_CENTER_SRV = "API_PROFITCENTER_SRV"
