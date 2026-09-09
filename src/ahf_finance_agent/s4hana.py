@@ -2246,6 +2246,16 @@ class S4HANAClient:
             )
         except S4HANAError as exc:
             return self._count_unavailable({"capPurchaseOrders": cap_purchase_orders}, str(exc))
+        if schedule_lines and not any("PurchaseOrder" in line for line in schedule_lines):
+            # self-heal (_select_get) silently dropped "PurchaseOrder" from
+            # $select because this tenant's A_PurchaseOrderScheduleLine
+            # rejects it -- without it there's no way to attribute a row to a
+            # PO, so this must report unavailable, NOT a false "0 overdue".
+            return self._count_unavailable(
+                {"capPurchaseOrders": cap_purchase_orders},
+                "this tenant's purchase-order schedule-line service does not expose a "
+                "PurchaseOrder field on $select, so overdue lines can't be attributed to a PO here",
+            )
         sampled: list[str] = []
         for line in schedule_lines:
             po = line.get("PurchaseOrder")

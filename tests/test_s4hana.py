@@ -1469,6 +1469,19 @@ def test_count_pos_overdue_without_goods_receipt_all_missing(fake_s4):
     assert out["capped"] is True
 
 
+def test_count_pos_overdue_without_goods_receipt_reports_unavailable_when_po_field_dropped(fake_s4):
+    # Live-confirmed 2026-09: this tenant's A_PurchaseOrderScheduleLine
+    # rejects "PurchaseOrder" on $select (self-heal silently drops it), which
+    # would otherwise make every row un-attributable to a PO and silently
+    # report "0 overdue" instead of "can't tell".
+    fake_s4.routes["/A_PurchaseOrderScheduleLine"] = {
+        "json": _d([{"ScheduleLineDeliveryDate": "/Date(1577836800000)/"}])  # no PurchaseOrder key
+    }
+    out = S4HANAClient(_settings()).count_pos_overdue_without_goods_receipt()
+    assert out["connected"] is False
+    assert out["count"] is None
+
+
 def test_count_pos_overdue_without_goods_receipt_all_received(fake_s4):
     fake_s4.routes["/A_PurchaseOrderScheduleLine"] = {
         "json": _d([{"PurchaseOrder": "4500000001", "ScheduleLineDeliveryDate": "/Date(1577836800000)/"}])
