@@ -160,12 +160,18 @@ _JE_REFERENCE_FIELDS = ("OriginalReferenceDocument", "ReferenceDocument", "Docum
 # CO account-assignment fields on the journal_entry_item capability (the
 # operational accounting-document cube), used to compute ACTUAL spend against
 # a cost object when no budget/plan API is active — see get_budget_status().
-# This is posted-actuals only, never a plan/budget figure.
+# This is posted-actuals only, never a plan/budget figure. Confirmed against
+# live A_OperationalAcctgDocItemCube data (2026-09): this cube names the PO
+# reference "PurchasingDocument"/"PurchasingDocumentItem", NOT "PurchaseOrder"/
+# "PurchaseOrderItem" (those are the field names on the PO service itself,
+# A_PurchaseOrder / A_PurchaseOrderItem — a different entity). The earlier
+# names here were an unverified guess that self-heal was silently swallowing,
+# making purchase_order cost-object actuals always come back None.
 _ACTUALS_SELECT = (
     "CompanyCode", "FiscalYear", "FiscalPeriod", "PostingDate",
     "AmountInCompanyCodeCurrency", "CompanyCodeCurrency", "DebitCreditCode",
     "GLAccount", "CostCenter", "OrderID", "WBSElement",
-    "PurchaseOrder", "PurchaseOrderItem",
+    "PurchasingDocument", "PurchasingDocumentItem",
 )
 # Same journal_entry_item cube, selected for a company-wide AP/AR OPEN ITEMS
 # summary (get_accounts_payable_summary / get_accounts_receivable_summary)
@@ -1590,7 +1596,7 @@ class S4HANAClient:
     _COST_OBJECT_FILTER_FIELD = {
         "cost_center": "CostCenter",
         "internal_order": "OrderID",
-        "purchase_order": "PurchaseOrder",
+        "purchase_order": "PurchasingDocument",
     }
 
     def get_cost_object_actuals(

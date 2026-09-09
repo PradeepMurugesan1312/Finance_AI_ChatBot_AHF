@@ -867,6 +867,21 @@ def test_get_cost_object_actuals_filters_by_order_id_for_internal_order(fake_s4)
     assert "FiscalYear eq '2026'" in fake_s4.requests[-1]["params"]["$filter"]
 
 
+def test_get_cost_object_actuals_filters_by_purchasing_document_for_purchase_order(fake_s4):
+    # Confirmed against live A_OperationalAcctgDocItemCube data (2026-09): this
+    # cube names the PO reference "PurchasingDocument", not "PurchaseOrder"
+    # (that name belongs to the separate PO service entity).
+    fake_s4.routes["/A_OperationalAcctgDocItemCube"] = {
+        "json": _d([{
+            "PurchasingDocument": "4500000030", "AmountInCompanyCodeCurrency": "250.00",
+            "DebitCreditCode": "S", "CompanyCodeCurrency": "USD",
+        }])
+    }
+    out = S4HANAClient(_settings()).get_cost_object_actuals("purchase_order", "4500000030")
+    assert out["netPostedAmount"] == 250.0
+    assert fake_s4.requests[-1]["params"]["$filter"] == "PurchasingDocument eq '4500000030'"
+
+
 def test_budget_status_computes_actual_spend_from_cost_center_postings(fake_s4):
     fake_s4.routes["/A_OperationalAcctgDocItemCube"] = {
         "json": _d([
