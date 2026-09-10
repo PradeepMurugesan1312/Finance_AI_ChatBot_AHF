@@ -1468,6 +1468,113 @@ def test_get_average_days_to_clear_computes_mean_span(fake_s4):
     assert out["clearedItemsScanned"] == 2
 
 
+def test_list_open_invoices_for_customer_sums_line_items_and_excludes_cleared(fake_s4):
+    fake_s4.routes["/A_OperationalAcctgDocItemCube"] = {
+        "json": _d([
+            {
+                "CompanyCode": "1710", "FiscalYear": "2017", "AccountingDocument": "1900000010",
+                "Customer": "200000", "AmountInCompanyCodeCurrency": "300.00", "DebitCreditCode": "S",
+                "CompanyCodeCurrency": "USD", "ClearingDate": None, "PostingDate": "/Date(1500000000000)/",
+                "NetDueDate": "/Date(946684800000)/",
+            },
+            {
+                "CompanyCode": "1710", "FiscalYear": "2017", "AccountingDocument": "1900000010",
+                "Customer": "200000", "AmountInCompanyCodeCurrency": "200.00", "DebitCreditCode": "S",
+                "CompanyCodeCurrency": "USD", "ClearingDate": None, "PostingDate": "/Date(1500000000000)/",
+                "NetDueDate": "/Date(946684800000)/",
+            },
+            {
+                "CompanyCode": "1710", "FiscalYear": "2017", "AccountingDocument": "1900000011",
+                "Customer": "200000", "AmountInCompanyCodeCurrency": "999.00", "DebitCreditCode": "S",
+                "CompanyCodeCurrency": "USD", "ClearingDate": "/Date(1719360000000+0000)/",
+            },
+        ])
+    }
+    out = S4HANAClient(_settings()).list_open_invoices_for_customer("200000", "1710")
+    assert out["connected"] is True
+    assert out["invoiceCount"] == 1
+    inv = out["invoices"][0]
+    assert inv["accountingDocument"] == "1900000010"
+    assert inv["amount"] == 500.0
+    assert inv["overdue"] is True
+
+
+def test_get_largest_open_receivable_picks_biggest_by_absolute_amount(fake_s4):
+    fake_s4.routes["/A_OperationalAcctgDocItemCube"] = {
+        "json": _d([
+            {
+                "CompanyCode": "1710", "Customer": "200000", "AccountingDocument": "1",
+                "AmountInCompanyCodeCurrency": "500.00", "DebitCreditCode": "S",
+                "CompanyCodeCurrency": "USD", "ClearingDate": None,
+            },
+            {
+                "CompanyCode": "1710", "Customer": "300000", "AccountingDocument": "2",
+                "AmountInCompanyCodeCurrency": "1500.00", "DebitCreditCode": "S",
+                "CompanyCodeCurrency": "USD", "ClearingDate": None,
+            },
+        ])
+    }
+    out = S4HANAClient(_settings()).get_largest_open_receivable("1710")
+    assert out["largest"]["accountingDocument"] == "2"
+    assert out["largest"]["amount"] == 1500.0
+
+
+def test_get_top_customers_by_open_receivable_ranks_descending(fake_s4):
+    fake_s4.routes["/A_OperationalAcctgDocItemCube"] = {
+        "json": _d([
+            {"CompanyCode": "1710", "Customer": "200000", "AmountInCompanyCodeCurrency": "500.00",
+             "DebitCreditCode": "S", "CompanyCodeCurrency": "USD", "ClearingDate": None},
+            {"CompanyCode": "1710", "Customer": "300000", "AmountInCompanyCodeCurrency": "1500.00",
+             "DebitCreditCode": "S", "CompanyCodeCurrency": "USD", "ClearingDate": None},
+            {"CompanyCode": "1710", "Customer": "200000", "AmountInCompanyCodeCurrency": "700.00",
+             "DebitCreditCode": "S", "CompanyCodeCurrency": "USD", "ClearingDate": None},
+        ])
+    }
+    out = S4HANAClient(_settings()).get_top_customers_by_open_receivable("1710")
+    assert [v["customer"] for v in out["customers"]] == ["300000", "200000"]
+    assert out["customers"][1]["amount"] == 1200.0
+
+
+def test_get_ar_aging_summary_buckets_by_days_past_due(fake_s4):
+    now_ms = int(time.time() * 1000)
+
+    def due(days_overdue):
+        return f"/Date({now_ms - days_overdue * 86400000})/"
+
+    fake_s4.routes["/A_OperationalAcctgDocItemCube"] = {
+        "json": _d([
+            {"CompanyCode": "1710", "Customer": "200000", "AmountInCompanyCodeCurrency": "100.00",
+             "DebitCreditCode": "S", "CompanyCodeCurrency": "USD", "ClearingDate": None,
+             "NetDueDate": due(-10)},  # not yet due -> current
+            {"CompanyCode": "1710", "Customer": "200000", "AmountInCompanyCodeCurrency": "200.00",
+             "DebitCreditCode": "S", "CompanyCodeCurrency": "USD", "ClearingDate": None,
+             "NetDueDate": due(15)},  # 15 days overdue -> 1-30
+            {"CompanyCode": "1710", "Customer": "200000", "AmountInCompanyCodeCurrency": "300.00",
+             "DebitCreditCode": "S", "CompanyCodeCurrency": "USD", "ClearingDate": None,
+             "NetDueDate": due(90)},  # 90 days overdue -> 60+
+        ])
+    }
+    out = S4HANAClient(_settings()).get_ar_aging_summary("1710")
+    assert out["buckets"]["current"]["count"] == 1
+    assert out["buckets"]["1-30"]["count"] == 1
+    assert out["buckets"]["31-60"]["count"] == 0
+    assert out["buckets"]["60+"]["count"] == 1
+
+
+def test_get_average_days_to_collect_computes_mean_span(fake_s4):
+    fake_s4.routes["/A_OperationalAcctgDocItemCube"] = {
+        "json": _d([
+            {"Customer": "200000", "PostingDate": "/Date(1600000000000)/",
+             "ClearingDate": "/Date(1600864000000)/"},  # +10 days
+            {"Customer": "200000", "PostingDate": "/Date(1600000000000)/",
+             "ClearingDate": "/Date(1601728000000)/"},  # +20 days
+        ])
+    }
+    out = S4HANAClient(_settings()).get_average_days_to_collect(customer="200000")
+    assert out["averageDays"] == 15.0
+    assert out["clearedItemsScanned"] == 2
+
+
 def test_count_purchase_orders_filters_by_period_and_vendor(fake_s4):
     fake_s4.routes["/A_PurchaseOrder"] = {
         "json": _d([{"PurchaseOrder": "4500000001"}, {"PurchaseOrder": "4500000002"}])

@@ -1928,14 +1928,14 @@ class S4HANAClient:
             "note": (
                 f"Computed from up to {self._OPEN_ITEMS_TOP} of the most recent postings "
                 "in scope"
-                + (" (truncated — there may be more)" if capped else "")
-                + " — NOT an official AP aging report (no day-based aging buckets, "
+                + (" (truncated, there may be more)" if capped else "")
+                + ". NOT an official AP aging report (no day-based aging buckets, "
                 "no dispute status). overdueCount/overdueAmount are the subset of the "
-                "open items above already past NetDueDate — same cap, not a separate "
+                "open items above already past NetDueDate, same cap, not a separate "
                 "fetch. A negative figure can be genuine (e.g. debit memos "
                 "or partial reversals among the open items scanned), but the debit/credit "
                 "sign convention here has not been independently verified against a known "
-                "invoice on this tenant — if the sign looks surprising, say so rather than "
+                "invoice on this tenant. If the sign looks surprising, say so rather than "
                 "asserting it confidently. If there are more open items than scanned, this "
                 "under-counts. Point to the AP aging report / FBL1N for a definitive figure."
             ),
@@ -1982,10 +1982,10 @@ class S4HANAClient:
                 "companyCode": company_code, "customer": customer, "fiscalYear": fiscal_year,
                 "connected": None, "openItemCount": None, "netOpenAmount": None,
                 "message": (
-                    "No postings matched, so there is nothing to sum — but this tenant's "
+                    "No postings matched, so there is nothing to sum, but this tenant's "
                     "Customer-field support is unconfirmed, so this doesn't reliably tell "
                     "'no open receivables' apart from 'AR isn't modelled on this cube "
-                    "here'. Treat as inconclusive; use the AR aging report (FBL5N) or "
+                    "here'. Treat as inconclusive. Use the AR aging report (FBL5N) or "
                     "search_policy_docs for the process side."
                 ),
             }
@@ -1995,7 +1995,7 @@ class S4HANAClient:
                 "connected": False, "openItemCount": None, "netOpenAmount": None,
                 "message": (
                     "This tenant's journal-entry service does not expose a Customer "
-                    "field, so a live AR summary can't be computed here — there is no "
+                    "field, so a live AR summary can't be computed here. There is no "
                     "other connected AR data source. Point the user to Accounts "
                     "Receivable / the customer line-item report (FBL5N)."
                 ),
@@ -2018,11 +2018,11 @@ class S4HANAClient:
             "note": (
                 f"Computed from up to {self._OPEN_ITEMS_TOP} of the most recent postings "
                 "in scope"
-                + (" (truncated — there may be more)" if capped else "")
-                + " — NOT an official AR aging report (no day-based aging buckets, "
+                + (" (truncated, there may be more)" if capped else "")
+                + ". NOT an official AR aging report (no day-based aging buckets, "
                 "no dispute/dunning status). The debit/credit sign convention has not been "
-                "independently verified against a known customer invoice on this tenant; "
-                "sanity-check against FBL5N before relying on this figure. If there are "
+                "independently verified against a known customer invoice on this tenant. "
+                "Sanity-check against FBL5N before relying on this figure. If there are "
                 "more open items than scanned, this under-counts."
             ),
         }
@@ -2078,7 +2078,7 @@ class S4HANAClient:
             "note": (
                 f"Open (uncleared) accounting documents for this vendor, computed from up to "
                 f"{self._OPEN_ITEMS_TOP} matching postings"
-                + (" (truncated — there may be more)" if capped else "")
+                + (" (truncated, there may be more)" if capped else "")
                 + f". Showing up to {top} of {len(invoices)} open documents found, oldest first. "
                 "NOT an official AP aging report."
             ),
@@ -2117,7 +2117,7 @@ class S4HANAClient:
             },
             "note": (
                 f"Largest open item among up to {self._OPEN_ITEMS_TOP} scanned postings"
-                + (" (truncated — there may be a larger one beyond the scan)." if capped else ".")
+                + (" (truncated, there may be a larger one beyond the scan)." if capped else ".")
             ),
         }
 
@@ -2166,9 +2166,9 @@ class S4HANAClient:
             "buckets": buckets, "postingsScanned": len(items),
             "note": (
                 f"Rough aging breakdown from up to {self._OPEN_ITEMS_TOP} scanned open items"
-                + (" (truncated — there may be more)" if capped else "")
-                + " — bucketed by days past NetDueDate. NOT the official AP aging report "
-                "(FBL1N); no dispute status, no partial-clearing netting beyond debit/credit sign."
+                + (" (truncated, there may be more)" if capped else "")
+                + ", bucketed by days past NetDueDate. NOT the official AP aging report "
+                "(FBL1N). No dispute status, no partial-clearing netting beyond debit/credit sign."
             ),
         }
 
@@ -2206,7 +2206,7 @@ class S4HANAClient:
             "vendors": ranked[:top], "vendorCount": len(ranked),
             "note": (
                 f"Top vendors by open payable amount, computed from up to {self._OPEN_ITEMS_TOP} "
-                "scanned postings" + (" (truncated — there may be more)" if capped else "")
+                "scanned postings" + (" (truncated, there may be more)" if capped else "")
                 + ". NOT an official AP aging report."
             ),
         }
@@ -2250,8 +2250,235 @@ class S4HANAClient:
             "note": (
                 f"Average days from posting to clearing across {len(day_spans)} cleared postings "
                 f"in scope, out of up to {self._OPEN_ITEMS_TOP} scanned"
-                + (" (truncated — there may be more)" if capped else "")
+                + (" (truncated, there may be more)" if capped else "")
                 + ". A rough payment-cycle-time indicator, not an official metric."
+            ),
+        }
+
+    # -- AR open-items drill-down / analytics --------------------------
+    # Same journal_entry_item cube + _OPEN_ITEMS_SELECT fields as the AP
+    # drill-down family above — Customer is already selected and confirmed
+    # live via get_accounts_receivable_summary, so this is no new service or
+    # field. Unlike AP, a customer receivable is booked as a debit, so the
+    # normalised (debit-positive / credit-negative) per-line amount already
+    # reads as positive = "customer owes us" — no final sign flip, matching
+    # get_accounts_receivable_summary's convention (see its docstring).
+
+    def list_open_invoices_for_customer(self, customer: str, company_code: str | None = None, *, top: int = 20) -> dict:
+        """Open (uncleared) invoice-level accounting documents for a customer —
+        drills get_accounts_receivable_summary's aggregate down into the
+        actual invoices: "which invoices for customer X are still unpaid".
+        One row per accounting document (its line items summed), oldest
+        posting date first.
+        """
+        filt = f"Customer eq {_lit(customer)}"
+        if company_code:
+            filt += f" and CompanyCode eq {_lit(company_code)}"
+        try:
+            items, capped = self._fetch_open_items(filt)
+        except S4HANAError as exc:
+            return {
+                "customer": customer, "companyCode": company_code, "connected": False, "invoices": [],
+                "message": f"Open-invoice lookup is not available on this system: {exc}",
+            }
+        open_lines = [it for it in items if _is_set(it.get("Customer")) and not _is_set(it.get("ClearingDate"))]
+        by_doc: dict[tuple, dict] = {}
+        for ln in open_lines:
+            key = (ln.get("CompanyCode"), ln.get("FiscalYear"), ln.get("AccountingDocument"))
+            amt = _num(ln.get("AmountInCompanyCodeCurrency")) or 0.0
+            if str(ln.get("DebitCreditCode")).strip().upper() in ("H", "2", "C"):
+                amt = -amt
+            doc = by_doc.setdefault(key, {
+                "companyCode": key[0], "fiscalYear": key[1], "accountingDocument": key[2],
+                "amount": 0.0, "currency": ln.get("CompanyCodeCurrency"),
+                "postingDate": ln.get("PostingDate"), "netDueDate": ln.get("NetDueDate"),
+            })
+            doc["amount"] += amt  # receivable = debit; already reads positive, unlike AP's flip
+        now_ms = time.time() * 1000
+        invoices = sorted(by_doc.values(), key=lambda d: d["postingDate"] or "")
+        for inv in invoices:
+            inv["amount"] = _round(inv["amount"], 2)
+            inv["overdue"] = (_sap_date_ms(inv["netDueDate"]) or 0) < now_ms if _is_set(inv["netDueDate"]) else None
+        return {
+            "customer": customer, "companyCode": company_code, "connected": True,
+            "invoiceCount": len(invoices), "invoices": invoices[:top],
+            "note": (
+                f"Open (uncleared) accounting documents for this customer, computed from up to "
+                f"{self._OPEN_ITEMS_TOP} matching postings"
+                + (" (truncated, there may be more)" if capped else "")
+                + f". Showing up to {top} of {len(invoices)} open documents found, oldest first. "
+                "NOT an official AR aging report."
+            ),
+        }
+
+    def get_largest_open_receivable(self, company_code: str, customer: str | None = None) -> dict:
+        """The single largest open (uncollected) customer invoice for a
+        company code (optionally one customer) — "what's our largest unpaid
+        receivable".
+        """
+        filt = f"CompanyCode eq {_lit(company_code)}"
+        if customer:
+            filt += f" and Customer eq {_lit(customer)}"
+        try:
+            items, capped = self._fetch_open_items(filt)
+        except S4HANAError as exc:
+            return {
+                "companyCode": company_code, "customer": customer, "connected": False, "largest": None,
+                "message": f"Lookup is not available on this system: {exc}",
+            }
+        open_lines = [it for it in items if _is_set(it.get("Customer")) and not _is_set(it.get("ClearingDate"))]
+        if not open_lines:
+            return {
+                "companyCode": company_code, "customer": customer, "connected": True, "largest": None,
+                "note": "No open items found in scope.",
+            }
+        largest = max(open_lines, key=lambda it: abs(_num(it.get("AmountInCompanyCodeCurrency")) or 0.0))
+        amt = _num(largest.get("AmountInCompanyCodeCurrency")) or 0.0
+        if str(largest.get("DebitCreditCode")).strip().upper() in ("H", "2", "C"):
+            amt = -amt
+        return {
+            "companyCode": company_code, "customer": customer, "connected": True,
+            "largest": {
+                "customer": largest.get("Customer"), "accountingDocument": largest.get("AccountingDocument"),
+                "fiscalYear": largest.get("FiscalYear"), "amount": _round(amt, 2),
+                "currency": largest.get("CompanyCodeCurrency"), "postingDate": largest.get("PostingDate"),
+            },
+            "note": (
+                f"Largest open item among up to {self._OPEN_ITEMS_TOP} scanned postings"
+                + (" (truncated, there may be a larger one beyond the scan)." if capped else ".")
+            ),
+        }
+
+    def get_ar_aging_summary(self, company_code: str, customer: str | None = None) -> dict:
+        """Rough AR aging breakdown (current / 1-30 / 31-60 / 60+ days
+        overdue) for open customer items in a company code — a lightweight
+        approximation of the real AR aging report (FBL5N), bucketed by days
+        past NetDueDate from the same capped open-items scan as
+        get_accounts_receivable_summary.
+        """
+        filt = f"CompanyCode eq {_lit(company_code)}"
+        if customer:
+            filt += f" and Customer eq {_lit(customer)}"
+        try:
+            items, capped = self._fetch_open_items(filt)
+        except S4HANAError as exc:
+            return {
+                "companyCode": company_code, "customer": customer, "connected": False, "buckets": None,
+                "message": f"Aging lookup is not available on this system: {exc}",
+            }
+        open_lines = [it for it in items if _is_set(it.get("Customer")) and not _is_set(it.get("ClearingDate"))]
+        now_ms = time.time() * 1000
+        buckets = {b: {"count": 0, "amount": 0.0} for b in self._AGING_BUCKETS}
+        for ln in open_lines:
+            due_ms = _sap_date_ms(ln.get("NetDueDate"))
+            days_overdue = (now_ms - due_ms) / 86400000 if due_ms is not None else None
+            bucket = "current"
+            if days_overdue is not None:
+                if days_overdue > 60:
+                    bucket = "60+"
+                elif days_overdue > 30:
+                    bucket = "31-60"
+                elif days_overdue > 0:
+                    bucket = "1-30"
+            amt = _num(ln.get("AmountInCompanyCodeCurrency")) or 0.0
+            if str(ln.get("DebitCreditCode")).strip().upper() in ("H", "2", "C"):
+                amt = -amt
+            buckets[bucket]["count"] += 1
+            buckets[bucket]["amount"] += amt
+        for b in buckets.values():
+            b["amount"] = _round(b["amount"], 2)
+        return {
+            "companyCode": company_code, "customer": customer, "connected": True,
+            "buckets": buckets, "postingsScanned": len(items),
+            "note": (
+                f"Rough aging breakdown from up to {self._OPEN_ITEMS_TOP} scanned open items"
+                + (" (truncated, there may be more)" if capped else "")
+                + ", bucketed by days past NetDueDate. NOT the official AR aging report "
+                "(FBL5N). No dispute/dunning status, no partial-clearing netting beyond debit/credit sign."
+            ),
+        }
+
+    def get_top_customers_by_open_receivable(self, company_code: str, *, top: int = 5) -> dict:
+        """Top customers by total open (uncollected) receivable amount for a
+        company code — "who owes us the most", grouped from the same capped
+        open-items scan as get_accounts_receivable_summary.
+        """
+        filt = f"CompanyCode eq {_lit(company_code)}"
+        try:
+            items, capped = self._fetch_open_items(filt)
+        except S4HANAError as exc:
+            return {
+                "companyCode": company_code, "connected": False, "customers": [],
+                "message": f"Lookup is not available on this system: {exc}",
+            }
+        open_lines = [it for it in items if _is_set(it.get("Customer")) and not _is_set(it.get("ClearingDate"))]
+        by_customer: dict[str, dict] = {}
+        for ln in open_lines:
+            customer = ln.get("Customer")
+            amt = _num(ln.get("AmountInCompanyCodeCurrency")) or 0.0
+            if str(ln.get("DebitCreditCode")).strip().upper() in ("H", "2", "C"):
+                amt = -amt
+            entry = by_customer.setdefault(customer, {
+                "customer": customer, "amount": 0.0,
+                "currency": ln.get("CompanyCodeCurrency"), "openItemCount": 0,
+            })
+            entry["amount"] += amt
+            entry["openItemCount"] += 1
+        ranked = sorted(by_customer.values(), key=lambda v: abs(v["amount"]), reverse=True)
+        for v in ranked:
+            v["amount"] = _round(v["amount"], 2)
+        return {
+            "companyCode": company_code, "connected": True,
+            "customers": ranked[:top], "customerCount": len(ranked),
+            "note": (
+                f"Top customers by open receivable amount, computed from up to {self._OPEN_ITEMS_TOP} "
+                "scanned postings" + (" (truncated, there may be more)" if capped else "")
+                + ". NOT an official AR aging report."
+            ),
+        }
+
+    def get_average_days_to_collect(self, customer: str | None = None, company_code: str | None = None) -> dict:
+        """Average days between posting and clearing for CLEARED customer
+        invoices in scope — "how long does it typically take customer X to
+        pay us", a rough collection-cycle-time indicator computed from the
+        same capped journal-entry cube as the other AR tools. Best scoped by
+        customer and/or company_code; unscoped scans tenant-wide (still
+        capped).
+        """
+        clauses = []
+        if customer:
+            clauses.append(f"Customer eq {_lit(customer)}")
+        if company_code:
+            clauses.append(f"CompanyCode eq {_lit(company_code)}")
+        filt = " and ".join(clauses) if clauses else None
+        try:
+            items, capped = self._fetch_open_items(filt)
+        except S4HANAError as exc:
+            return {
+                "customer": customer, "companyCode": company_code, "connected": False, "averageDays": None,
+                "message": f"Lookup is not available on this system: {exc}",
+            }
+        cleared = [it for it in items if _is_set(it.get("Customer")) and _is_set(it.get("ClearingDate"))]
+        day_spans = []
+        for ln in cleared:
+            posted_ms = _sap_date_ms(ln.get("PostingDate"))
+            cleared_ms = _sap_date_ms(ln.get("ClearingDate"))
+            if posted_ms is not None and cleared_ms is not None and cleared_ms >= posted_ms:
+                day_spans.append((cleared_ms - posted_ms) / 86400000)
+        if not day_spans:
+            return {
+                "customer": customer, "companyCode": company_code, "connected": True, "averageDays": None,
+                "clearedItemsScanned": len(cleared),
+                "note": "No cleared items with both a posting and clearing date found in scope.",
+            }
+        return {
+            "customer": customer, "companyCode": company_code, "connected": True,
+            "averageDays": _round(sum(day_spans) / len(day_spans), 1), "clearedItemsScanned": len(day_spans),
+            "note": (
+                f"Average days from posting to clearing across {len(day_spans)} cleared postings "
+                f"in scope, out of up to {self._OPEN_ITEMS_TOP} scanned"
+                + (" (truncated, there may be more)" if capped else "")
+                + ". A rough collection-cycle-time indicator, not an official metric."
             ),
         }
 
@@ -2357,7 +2584,7 @@ class S4HANAClient:
         sample = [r.get("PurchaseOrder") for r in records[: self._LIST_SAMPLE_CAP]]
         return self._count_ok(count, capped, filters, (
             f"Count of purchase orders matching the given scope, computed from up to "
-            f"{self._COUNT_CAP} matching POs" + (" (truncated — there may be more)" if capped else "") + "."
+            f"{self._COUNT_CAP} matching POs" + (" (truncated, there may be more)" if capped else "") + "."
             + self._sample_note(count, len(sample))
         ), purchaseOrders=sample)
 
@@ -2383,7 +2610,7 @@ class S4HANAClient:
         return self._count_ok(count, capped, filters, (
             f"Count of purchase requisitions with a CreationDate in this window, computed "
             f"from up to {self._COUNT_CAP} matching requisitions"
-            + (" (truncated — there may be more)" if capped else "") + "." + self._sample_note(count, len(sample))
+            + (" (truncated, there may be more)" if capped else "") + "." + self._sample_note(count, len(sample))
         ), purchaseRequisitions=sample)
 
     def count_supplier_invoices(
@@ -2421,7 +2648,7 @@ class S4HANAClient:
         ]
         return self._count_ok(count, capped, filters, (
             f"Count of supplier invoices matching the given scope, computed from up to "
-            f"{self._COUNT_CAP} matching invoices" + (" (truncated — there may be more)" if capped else "") + "."
+            f"{self._COUNT_CAP} matching invoices" + (" (truncated, there may be more)" if capped else "") + "."
             + self._sample_note(count, len(sample))
         ), invoices=sample)
 
@@ -2449,7 +2676,7 @@ class S4HANAClient:
         return self._count_ok(count, capped, filters, (
             f"Count of distinct vendor-invoice accounting documents (doc type KR) posted "
             f"in this fiscal period, computed from up to {self._COUNT_CAP} matching line "
-            "items" + (" (truncated — there may be more)" if capped else "") + "."
+            "items" + (" (truncated, there may be more)" if capped else "") + "."
             + self._sample_note(count, len(sample))
         ), accountingDocuments=sample)
 
@@ -2484,7 +2711,7 @@ class S4HANAClient:
         return self._count_ok(count, capped, filters, (
             f"Count of distinct (non-cancelled) goods-receipt documents in this window, "
             f"computed from up to {self._COUNT_CAP} matching line items"
-            + (" (truncated — there may be more)" if capped else "") + ". NOT filtered to "
+            + (" (truncated, there may be more)" if capped else "") + ". NOT filtered to "
             "POs that are still open — counts all matching receipts regardless of the "
             "PO's completion status." + self._sample_note(count, len(sample))
         ), materialDocuments=sample)
@@ -2586,7 +2813,7 @@ class S4HANAClient:
         return self._count_ok(count, capped, filters, (
             f"Count of distinct accounting documents with a ClearingDate in this window, "
             f"computed from up to {self._COUNT_CAP} matching line items"
-            + (" (truncated — there may be more)" if capped else "") + ". Not an official "
+            + (" (truncated, there may be more)" if capped else "") + ". Not an official "
             "payment-run report." + self._sample_note(count, len(sample))
         ), accountingDocuments=sample)
 
@@ -2610,7 +2837,7 @@ class S4HANAClient:
         ]
         return self._count_ok(count, capped, filters, (
             f"Count of vendors with a CreationDate in this window, computed from up to "
-            f"{self._COUNT_CAP} matching suppliers" + (" (truncated — there may be more)" if capped else "") + "."
+            f"{self._COUNT_CAP} matching suppliers" + (" (truncated, there may be more)" if capped else "") + "."
             + self._sample_note(count, len(sample))
         ), vendors=sample)
 
@@ -2631,7 +2858,7 @@ class S4HANAClient:
         return self._count_ok(count, capped, {}, (
             f"Count of suppliers with PurchasingIsBlockedForSupplier or PostingIsBlocked "
             f"set, computed from up to {self._COUNT_CAP} matching suppliers"
-            + (" (truncated — there may be more)" if capped else "") + "." + self._sample_note(count, len(sample))
+            + (" (truncated, there may be more)" if capped else "") + "." + self._sample_note(count, len(sample))
         ), vendors=sample)
 
     def search_vendors_by_name(self, name: str, cap: int = 200) -> dict:

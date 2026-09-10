@@ -40,6 +40,11 @@ def test_specs_and_handlers_are_in_lockstep():
         "get_ap_aging_summary",
         "get_top_vendors_by_open_payable",
         "get_average_days_to_clear",
+        "list_open_invoices_for_customer",
+        "get_largest_open_receivable",
+        "get_ar_aging_summary",
+        "get_top_customers_by_open_receivable",
+        "get_average_days_to_collect",
         "count_purchase_orders",
         "count_purchase_requisitions",
         "count_supplier_invoices",
@@ -443,6 +448,45 @@ def test_dispatch_get_average_days_to_clear():
     s4 = FakeS4HANAClient(get_average_days_to_clear={"connected": True, "averageDays": 12.5})
     outcome = dispatch_tool("get_average_days_to_clear", '{"vendor": "100000"}', s4)
     assert s4.calls == [("get_average_days_to_clear", ("100000", None), {})]
+    assert outcome.grounded is True
+
+
+def test_dispatch_list_open_invoices_for_customer():
+    s4 = FakeS4HANAClient(
+        list_open_invoices_for_customer={"connected": True, "invoiceCount": 1, "invoices": [{"accountingDocument": "1"}]}
+    )
+    outcome = dispatch_tool(
+        "list_open_invoices_for_customer", '{"customer": "200000", "company_code": "1710"}', s4
+    )
+    assert s4.calls == [("list_open_invoices_for_customer", ("200000", "1710"), {"top": 20})]
+    assert outcome.grounded is True
+
+
+def test_dispatch_get_largest_open_receivable():
+    s4 = FakeS4HANAClient(get_largest_open_receivable={"connected": True, "largest": {"amount": 500.0}})
+    outcome = dispatch_tool("get_largest_open_receivable", '{"company_code": "1710"}', s4)
+    assert s4.calls == [("get_largest_open_receivable", ("1710", None), {})]
+    assert outcome.grounded is True
+
+
+def test_dispatch_get_ar_aging_summary():
+    s4 = FakeS4HANAClient(get_ar_aging_summary={"connected": True, "buckets": {}})
+    outcome = dispatch_tool("get_ar_aging_summary", '{"company_code": "1710", "customer": "200000"}', s4)
+    assert s4.calls == [("get_ar_aging_summary", ("1710", "200000"), {})]
+    assert outcome.grounded is True
+
+
+def test_dispatch_get_top_customers_by_open_receivable():
+    s4 = FakeS4HANAClient(get_top_customers_by_open_receivable={"connected": True, "customers": []})
+    outcome = dispatch_tool("get_top_customers_by_open_receivable", '{"company_code": "1710"}', s4)
+    assert s4.calls == [("get_top_customers_by_open_receivable", ("1710",), {"top": 5})]
+    assert outcome.grounded is True
+
+
+def test_dispatch_get_average_days_to_collect():
+    s4 = FakeS4HANAClient(get_average_days_to_collect={"connected": True, "averageDays": 12.5})
+    outcome = dispatch_tool("get_average_days_to_collect", '{"customer": "200000"}', s4)
+    assert s4.calls == [("get_average_days_to_collect", ("200000", None), {})]
     assert outcome.grounded is True
 
 

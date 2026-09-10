@@ -16,7 +16,7 @@ HUMAN_QUEUE_HINT = (
 
 
 def escalation_sentence(reason: str | None = None) -> str:
-    lead = "I'm not able to answer that confidently"
+    lead = "I'm not able to answer that confidently."
     if reason:
-        lead = f"{lead} — {reason}"
-    return f"{lead}. For anything time-sensitive, {HUMAN_QUEUE_HINT}."
+        lead = f"{lead} {reason[0].upper()}{reason[1:]}."
+    return f"{lead} For anything time-sensitive, {HUMAN_QUEUE_HINT}."

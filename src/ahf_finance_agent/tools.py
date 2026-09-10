@@ -235,6 +235,35 @@ def _get_average_days_to_clear(c: S4HANAClient, a: dict) -> ToolOutcome:
     return ToolOutcome(result, grounded=bool(result.get("connected")))
 
 
+# -- AR open-items drill-down / analytics tools --------------------------
+
+def _list_open_invoices_for_customer(c: S4HANAClient, a: dict) -> ToolOutcome:
+    result = c.list_open_invoices_for_customer(
+        _req(a, "customer"), a.get("company_code") or None, top=_int_arg(a, "top", 20, 1, 100),
+    )
+    return ToolOutcome(result, grounded=bool(result.get("connected")))
+
+
+def _get_largest_open_receivable(c: S4HANAClient, a: dict) -> ToolOutcome:
+    result = c.get_largest_open_receivable(_req(a, "company_code"), a.get("customer") or None)
+    return ToolOutcome(result, grounded=bool(result.get("connected")))
+
+
+def _get_ar_aging_summary(c: S4HANAClient, a: dict) -> ToolOutcome:
+    result = c.get_ar_aging_summary(_req(a, "company_code"), a.get("customer") or None)
+    return ToolOutcome(result, grounded=bool(result.get("connected")))
+
+
+def _get_top_customers_by_open_receivable(c: S4HANAClient, a: dict) -> ToolOutcome:
+    result = c.get_top_customers_by_open_receivable(_req(a, "company_code"), top=_int_arg(a, "top", 5, 1, 20))
+    return ToolOutcome(result, grounded=bool(result.get("connected")))
+
+
+def _get_average_days_to_collect(c: S4HANAClient, a: dict) -> ToolOutcome:
+    result = c.get_average_days_to_collect(a.get("customer") or None, a.get("company_code") or None)
+    return ToolOutcome(result, grounded=bool(result.get("connected")))
+
+
 # -- "how many" / volume-count tools ------------------------------------
 
 def _count_purchase_orders(c: S4HANAClient, a: dict) -> ToolOutcome:
@@ -335,6 +364,11 @@ _HANDLERS: dict[str, Callable[[S4HANAClient, dict], ToolOutcome]] = {
     "get_ap_aging_summary": _get_ap_aging_summary,
     "get_top_vendors_by_open_payable": _get_top_vendors_by_open_payable,
     "get_average_days_to_clear": _get_average_days_to_clear,
+    "list_open_invoices_for_customer": _list_open_invoices_for_customer,
+    "get_largest_open_receivable": _get_largest_open_receivable,
+    "get_ar_aging_summary": _get_ar_aging_summary,
+    "get_top_customers_by_open_receivable": _get_top_customers_by_open_receivable,
+    "get_average_days_to_collect": _get_average_days_to_collect,
     "count_purchase_orders": _count_purchase_orders,
     "count_purchase_requisitions": _count_purchase_requisitions,
     "count_supplier_invoices": _count_supplier_invoices,
@@ -758,6 +792,70 @@ TOOL_SPECS: list[dict] = [
         },
         [],
     ),
+    # -- AR open-items drill-down / analytics -------------------------
+    # Customer-side mirror of the AP family above. Same live-confirmed
+    # open-items data get_accounts_receivable_summary uses (not a new
+    # field/service) — same caveats apply: computed, capped, NOT an
+    # official AR aging report.
+    _fn(
+        "list_open_invoices_for_customer",
+        "List of open (unpaid) invoice-level accounting documents for a "
+        "customer — 'which invoices for customer X are still unpaid'. Drills "
+        "down from get_accounts_receivable_summary's aggregate into the "
+        "actual documents, oldest first, each flagged overdue true/false/"
+        "null. NOT an official AR aging report.",
+        {
+            "customer": {"type": "string", "description": "Customer number."},
+            "company_code": {"type": "string", "description": "Optional company code, e.g. 1710."},
+            "top": {"type": "integer", "description": "Max invoices to return (default 20, max 100)."},
+        },
+        ["customer"],
+    ),
+    _fn(
+        "get_largest_open_receivable",
+        "The single largest open (unpaid) customer invoice for a company "
+        "code, optionally scoped to one customer — 'what's our largest "
+        "unpaid receivable'.",
+        {
+            "company_code": {"type": "string", "description": "Company code, e.g. 1710"},
+            "customer": {"type": "string", "description": "Optional customer number."},
+        },
+        ["company_code"],
+    ),
+    _fn(
+        "get_ar_aging_summary",
+        "Rough AR aging breakdown (current / 1-30 / 31-60 / 60+ days overdue) "
+        "for open customer items in a company code, optionally one customer "
+        "— 'break down our open receivables by aging bucket'. NOT the "
+        "official AR aging report (FBL5N) — always relay that caveat.",
+        {
+            "company_code": {"type": "string", "description": "Company code, e.g. 1710"},
+            "customer": {"type": "string", "description": "Optional customer number."},
+        },
+        ["company_code"],
+    ),
+    _fn(
+        "get_top_customers_by_open_receivable",
+        "Top customers by total open (unpaid) amount for a company code — "
+        "'who owes us the most'.",
+        {
+            "company_code": {"type": "string", "description": "Company code, e.g. 1710"},
+            "top": {"type": "integer", "description": "How many customers to return (default 5, max 20)."},
+        },
+        ["company_code"],
+    ),
+    _fn(
+        "get_average_days_to_collect",
+        "Average days from posting to clearing for a customer's (or company "
+        "code's) cleared invoices — 'on average how long does it take "
+        "customer X to pay us'. A rough collection-cycle-time indicator, not "
+        "an official metric. Best scoped by customer and/or company_code.",
+        {
+            "customer": {"type": "string", "description": "Optional customer number."},
+            "company_code": {"type": "string", "description": "Optional company code, e.g. 1710."},
+        },
+        [],
+    ),
     # -- "how many" / volume-count tools ------------------------------
     # Shared conventions across all of these: {count, capped, connected,
     # filters, note} on success ({count: null, connected: false, message} on
@@ -1020,9 +1118,11 @@ def dispatch_tool(name: str, raw_arguments: str | None, client: S4HANAClient) ->
 
 
 _GROUNDED_MSG = (
-    "Answer using ONLY these passages. Cite each fact inline as "
-    "'(<title> — <section>)'. If they don't fully cover the question, say which "
-    "part isn't covered and point the user to the AHF finance support team."
+    "Answer using ONLY these passages. After each fact, name the source in "
+    "its own short clause, like 'Per the Travel Policy, section 4.2, ...'. Do "
+    "not wrap the citation in parentheses or set it off with a dash. If they "
+    "don't fully cover the question, say which part isn't covered and point "
+    "the user to the AHF finance support team."
 )
 _NOT_GROUNDED_MSG = (
     "No sufficiently relevant policy passage was found. Do NOT answer from "

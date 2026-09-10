@@ -359,6 +359,51 @@ def _skills() -> list[AgentSkill]:
             examples=["On average, how many days does it take us to clear an invoice for vendor 100000?"],
         ),
         AgentSkill(
+            id="list_open_invoices_for_customer",
+            name="List Open Invoices For Customer",
+            description=(
+                "List of open (unpaid) invoice-level accounting documents "
+                "for a customer, drilling down from the AR summary into the "
+                "actual documents."
+            ),
+            tags=["accounts receivable", "invoice", "read-only"],
+            examples=["Which invoices for customer 100000 are still unpaid?"],
+        ),
+        AgentSkill(
+            id="get_largest_open_receivable",
+            name="Get Largest Open Receivable",
+            description="The single largest open (unpaid) customer invoice for a company code.",
+            tags=["accounts receivable", "invoice", "read-only"],
+            examples=["What's our largest unpaid receivable for company code 1710?"],
+        ),
+        AgentSkill(
+            id="get_ar_aging_summary",
+            name="Get AR Aging Summary",
+            description=(
+                "Rough AR aging breakdown (current / 1-30 / 31-60 / 60+ days "
+                "overdue) for open customer items — not the official aging report."
+            ),
+            tags=["accounts receivable", "aging", "read-only"],
+            examples=["Break down our open receivables for company code 1710 by aging bucket."],
+        ),
+        AgentSkill(
+            id="get_top_customers_by_open_receivable",
+            name="Get Top Customers By Open Receivable",
+            description="Top customers by total open (unpaid) amount for a company code.",
+            tags=["accounts receivable", "customer", "read-only"],
+            examples=["Who owes us the most for company code 1710?"],
+        ),
+        AgentSkill(
+            id="get_average_days_to_collect",
+            name="Get Average Days To Collect",
+            description=(
+                "Average days from posting to clearing for a customer's "
+                "cleared invoices — a rough collection-cycle-time indicator."
+            ),
+            tags=["accounts receivable", "payments", "read-only"],
+            examples=["On average, how many days does it take customer 100000 to pay us?"],
+        ),
+        AgentSkill(
             id="count_purchase_orders",
             name="Count Purchase Orders",
             description=(
