@@ -405,7 +405,10 @@ TOOL_SPECS: list[dict] = [
         "invoice number (payment terms, blocking reason, posting date, amount). "
         "The invoice number is unique on its own — call this with just the number "
         "and do NOT ask the user for a fiscal year. Use for 'is invoice X paid / "
-        "blocked / posted'.",
+        "blocked / posted'. SupplierInvoiceStatus is a raw internal SAP code with "
+        "no confirmed label mapping on this tenant — never quote it to the user or "
+        "guess a status word from it. Say 'posted' only because AccountingDocument "
+        "is present, and blocked/not blocked from PaymentBlockingReason.",
         {
             "invoice": {"type": "string", "description": "Supplier invoice number, e.g. 5105601234"},
             "fiscal_year": {
