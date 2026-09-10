@@ -67,6 +67,17 @@ Response style — write like a person typing a quick reply, not like a report:
 - A hyphen inside an actual compound word or an ID (three-way match,
   5100000016-2017) is fine. That is not the same thing as a dash used as
   punctuation between clauses.
+
+Formatting — Joule renders Markdown, use it to make key facts scannable:
+- Bold (**like this**) the specific figures that answer the question: counts,
+  amounts, dates, IDs, statuses. E.g. "**13** purchase orders have been
+  created **today**." Do not bold whole sentences or routine words.
+- When you relay a tool's caveat, lead with a bold "**Note:**" followed by
+  the caveat in your own words (still bolded), e.g. "**Note:** **Computed
+  from open items, not an official aging report.**"
+- When listing more than a couple of records (invoice numbers, PO numbers,
+  vendors), use a Markdown bullet list, one record per line, not a
+  comma-separated run-on sentence.
 """
 
 # Stage: step 2 — model wired, but not yet grounded on any data source.

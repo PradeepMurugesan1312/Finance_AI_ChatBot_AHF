@@ -133,3 +133,53 @@ def test_api_status_error_becomes_llmerror(patched):
 def test_missing_deployment_id_raises_before_network():
     with pytest.raises(Exception, match="LLM_DEPLOYMENT_ID"):
         GenAIHubClient(_settings(llm_deployment_id=None)).chat([{"role": "user", "content": "hi"}])
+
+
+def test_sends_reasoning_effort_by_default(patched):
+    capture, _, _ = patched
+    GenAIHubClient(_settings()).chat([{"role": "user", "content": "hi"}])
+    assert capture["reasoning_effort"] == "low"
+
+
+def test_reasoning_effort_can_be_disabled(patched):
+    capture, _, _ = patched
+    GenAIHubClient(_settings(llm_reasoning_effort=None)).chat([{"role": "user", "content": "hi"}])
+    assert "reasoning_effort" not in capture
+
+
+def test_reasoning_effort_falls_back_when_ai_core_rejects_it(monkeypatch):
+    calls: list[dict] = []
+
+    def fake_resolve(name, **kw):
+        return ResolvedDestination(
+            name=name,
+            url="https://api.ai.example.com/v2",
+            headers={"Authorization": "Bearer tok-abc", "Accept": "application/json"},
+            proxy=None,
+            authentication="OAuth2ClientCredentials",
+            proxy_type="Internet",
+        )
+
+    req = httpx.Request("POST", "https://api.ai.example.com/v2/inference/deployments/dep-123/chat/completions")
+    resp_400 = httpx.Response(400, request=req, json={"error": "Unrecognized request argument: reasoning_effort"})
+
+    def fake_openai_factory(**kwargs):
+        class _Completions:
+            def create(self, **kw):
+                calls.append(kw)
+                if "reasoning_effort" in kw:
+                    raise openai.APIStatusError("bad request", response=resp_400, body=None)
+                return _mk_response()
+
+        obj = type("FakeOpenAI", (), {})()
+        obj.chat = type("Chat", (), {"completions": _Completions()})()
+        return obj
+
+    monkeypatch.setattr(llm_mod, "resolve_destination", fake_resolve)
+    monkeypatch.setattr(openai, "OpenAI", fake_openai_factory)
+
+    result = GenAIHubClient(_settings()).chat([{"role": "user", "content": "hi"}])
+    assert result.text == "pong"
+    assert len(calls) == 2
+    assert calls[0]["reasoning_effort"] == "low"
+    assert "reasoning_effort" not in calls[1]

@@ -119,9 +119,26 @@ class GenAIHubClient:
         if tools:
             kwargs["tools"] = tools
             kwargs["tool_choice"] = tool_choice or "auto"
+        if s.llm_reasoning_effort:
+            kwargs["reasoning_effort"] = s.llm_reasoning_effort
         start = time.monotonic()
         try:
-            resp = client.chat.completions.create(**kwargs)
+            try:
+                resp = client.chat.completions.create(**kwargs)
+            except openai.APIStatusError as exc:
+                # Self-healing, same spirit as s4hana.py's field-drop retries:
+                # an older/different AI Core proxy may not recognise
+                # reasoning_effort yet. Drop it and retry once rather than
+                # failing every single turn over a speed knob.
+                if kwargs.get("reasoning_effort") and exc.status_code == 400:
+                    logger.warning(
+                        "AI Core rejected reasoning_effort=%r (%s); retrying without it",
+                        kwargs["reasoning_effort"], exc,
+                    )
+                    kwargs.pop("reasoning_effort", None)
+                    resp = client.chat.completions.create(**kwargs)
+                else:
+                    raise
         except openai.APIStatusError as exc:
             body = getattr(exc, "message", str(exc))
             logger.error(
