@@ -62,13 +62,13 @@ class Settings(BaseSettings):
     # chat param — the openai client sends `max_completion_tokens`.
     llm_max_completion_tokens: int = 4096
     # Reasoning-tier models spend hidden "thinking" time proportional to this
-    # (none/minimal/low/medium/high/xhigh/max). This agent mostly does
-    # single-tool lookups and short RAG answers, not deep multi-step
-    # reasoning, so "low" cuts response latency without needing the model's
-    # full reasoning budget. Raise it (env LLM_REASONING_EFFORT) if tool
-    # selection or handoff judgement gets noticeably worse. llm.py falls back
-    # to omitting this entirely if the deployment rejects it.
-    llm_reasoning_effort: str | None = "low"
+    # (none/minimal/low/medium/high/xhigh/max). Tried "low" for latency
+    # (2026-09): live-measured before/after showed no meaningful speedup, so
+    # there is no latency reason to keep it low — "high" instead, favouring
+    # correct tool selection and guardrail judgement across 43 tools + the
+    # policy KB over the small, unmeasurable time difference. llm.py falls
+    # back to omitting this entirely if a deployment rejects it.
+    llm_reasoning_effort: str | None = "high"
     # Kept well under the 60s synchronous A2A budget (step 5 adds the async
     # webhook path for anything slower).
     llm_timeout_seconds: float = 45.0

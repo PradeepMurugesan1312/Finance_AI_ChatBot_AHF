@@ -138,7 +138,7 @@ def test_missing_deployment_id_raises_before_network():
 def test_sends_reasoning_effort_by_default(patched):
     capture, _, _ = patched
     GenAIHubClient(_settings()).chat([{"role": "user", "content": "hi"}])
-    assert capture["reasoning_effort"] == "low"
+    assert capture["reasoning_effort"] == "high"
 
 
 def test_reasoning_effort_can_be_disabled(patched):
@@ -181,5 +181,5 @@ def test_reasoning_effort_falls_back_when_ai_core_rejects_it(monkeypatch):
     result = GenAIHubClient(_settings()).chat([{"role": "user", "content": "hi"}])
     assert result.text == "pong"
     assert len(calls) == 2
-    assert calls[0]["reasoning_effort"] == "low"
+    assert calls[0]["reasoning_effort"] == "high"
     assert "reasoning_effort" not in calls[1]
