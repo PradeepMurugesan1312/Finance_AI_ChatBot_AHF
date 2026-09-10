@@ -1118,11 +1118,13 @@ def dispatch_tool(name: str, raw_arguments: str | None, client: S4HANAClient) ->
 
 
 _GROUNDED_MSG = (
-    "Answer using ONLY these passages. After each fact, name the source in "
-    "its own short clause, like 'Per the Travel Policy, section 4.2, ...'. Do "
-    "not wrap the citation in parentheses or set it off with a dash. If they "
-    "don't fully cover the question, say which part isn't covered and point "
-    "the user to the AHF finance support team."
+    "Answer using ONLY these passages. Name the source ONCE per distinct "
+    "section, not after every sentence, as a short trailing clause like 'per "
+    "the Travel Policy, section 4.2'. If several facts in a row come from the "
+    "same section, cite it once and let the rest of that paragraph ride on "
+    "it. Do not wrap the citation in parentheses or set it off with a dash. "
+    "If they don't fully cover the question, say which part isn't covered "
+    "and point the user to the AHF finance support team."
 )
 _NOT_GROUNDED_MSG = (
     "No sufficiently relevant policy passage was found. Do NOT answer from "
