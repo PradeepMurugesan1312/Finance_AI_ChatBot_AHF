@@ -71,6 +71,10 @@ def _get_invoice_status(c: S4HANAClient, a: dict) -> ToolOutcome:
     return _record(c.get_invoice_status(_req(a, "invoice"), a.get("fiscal_year") or None))
 
 
+def _get_customer_invoice_status(c: S4HANAClient, a: dict) -> ToolOutcome:
+    return _record(c.get_customer_invoice_status(_req(a, "customer_invoice"), a.get("fiscal_year") or None))
+
+
 def _int_arg(a: dict, key: str, default: int, lo: int, hi: int) -> int:
     raw = a.get(key)
     if raw is None or str(raw).strip() == "":
@@ -337,6 +341,7 @@ def _search_vendors_by_name(c: S4HANAClient, a: dict) -> ToolOutcome:
 
 _HANDLERS: dict[str, Callable[[S4HANAClient, dict], ToolOutcome]] = {
     "get_invoice_status": _get_invoice_status,
+    "get_customer_invoice_status": _get_customer_invoice_status,
     "get_invoice_items": _get_invoice_items,
     "search_invoices_by_vendor": _search_invoices_by_vendor,
     "get_payment_clearing_status": _get_payment_clearing_status,
@@ -417,6 +422,28 @@ TOOL_SPECS: list[dict] = [
             },
         },
         ["invoice"],
+    ),
+    _fn(
+        "get_customer_invoice_status",
+        "Look up the status and header of a SAP S/4HANA CUSTOMER (AR) invoice by "
+        "its invoice number — the accounts-receivable mirror of "
+        "get_invoice_status. Use for 'status of customer invoice X', 'has "
+        "customer invoice X been posted / paid'. Newly connected (2026-09): "
+        "unlike get_accounts_receivable_summary's confirmed fields, no live "
+        "customer invoice number has verified this path yet, so relay a "
+        "not-found result plainly and hand off to AP/AR support rather than "
+        "asserting the invoice doesn't exist. The invoice number is unique on "
+        "its own — call with just the number and only pass a fiscal year if the "
+        "user volunteered one. For the portfolio-level 'how much are we owed' "
+        "question use get_accounts_receivable_summary instead.",
+        {
+            "customer_invoice": {"type": "string", "description": "Customer invoice number, e.g. 9400001234"},
+            "fiscal_year": {
+                "type": "string",
+                "description": "Optional 4-digit fiscal year; only pass it if the user volunteered one.",
+            },
+        },
+        ["customer_invoice"],
     ),
     _fn(
         "search_invoices_by_vendor",

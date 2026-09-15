@@ -110,6 +110,9 @@ class FakeS4HANAClient:
     def get_invoice_status(self, *a, **k):
         return self._canned("get_invoice_status", *a, **k)
 
+    def get_customer_invoice_status(self, *a, **k):
+        return self._canned("get_customer_invoice_status", *a, **k)
+
     def search_invoices_by_vendor(self, *a, **k):
         return self._canned("search_invoices_by_vendor", *a, **k) or []
 

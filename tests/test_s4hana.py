@@ -250,6 +250,46 @@ def test_invoice_status_by_number_only_does_not_filter_on_fiscal_year(fake_s4):
     assert rec["FiscalYear"] == "2017"
 
 
+def test_customer_invoice_status_builds_filter_and_strips_sensitive_fields(fake_s4):
+    fake_s4.routes["/A_CustomerInvoice"] = {
+        "json": _d(
+            [
+                {
+                    "__metadata": {"uri": "x"},
+                    "CustomerInvoice": "9400001234",
+                    "FiscalYear": "2026",
+                    "Customer": "1000000",
+                    "IBAN": "DE89370400440532013000",  # must never survive
+                }
+            ]
+        )
+    }
+    rec = S4HANAClient(_settings()).get_customer_invoice_status("9400001234", "2026")
+    params = fake_s4.requests[-1]["params"]
+    assert params["$filter"] == "CustomerInvoice eq '9400001234' and FiscalYear eq '2026'"
+    select = params["$select"].split(",")
+    assert "IBAN" not in select
+    assert "IBAN" not in rec
+    assert "__metadata" not in rec
+    assert rec["CustomerInvoice"] == "9400001234"
+
+
+def test_customer_invoice_status_none_when_filter_returns_nothing(fake_s4):
+    fake_s4.routes["/A_CustomerInvoice"] = {"json": _d([])}
+    assert S4HANAClient(_settings()).get_customer_invoice_status("9400001234", "2026") is None
+
+
+def test_customer_invoice_status_by_number_only_does_not_filter_on_fiscal_year(fake_s4):
+    fake_s4.routes["/A_CustomerInvoice"] = {
+        "json": _d([{"CustomerInvoice": "9400001234", "FiscalYear": "2026"}])
+    }
+    rec = S4HANAClient(_settings()).get_customer_invoice_status("9400001234")
+    params = fake_s4.requests[-1]["params"]
+    assert params["$filter"] == "CustomerInvoice eq '9400001234'"
+    assert params["$orderby"] == "PostingDate desc"
+    assert rec["FiscalYear"] == "2026"
+
+
 def test_select_drops_release_specific_field_and_retries(fake_s4):
     # Gateway 404s the whole request when $select names an unknown field.
     fake_s4.routes["/A_PurchaseOrder("] = {
@@ -571,7 +611,7 @@ def test_probe_catalog_reports_every_capability(fake_s4):
     fake_s4.routes["/"] = {"json": _d([])}  # anything answers -> every candidate "ok"
     out = S4HANAClient(_settings()).probe_catalog()
     assert set(out) == {
-        "supplier_invoice_header", "supplier_invoice_item", "journal_entry_item",
+        "supplier_invoice_header", "customer_invoice_header", "supplier_invoice_item", "journal_entry_item",
         "purchase_order_header", "purchase_order_item", "purchase_order_schedule_line",
         "goods_receipt_item", "purchase_requisition_header", "purchase_requisition_item",
         "business_partner", "supplier", "budget",

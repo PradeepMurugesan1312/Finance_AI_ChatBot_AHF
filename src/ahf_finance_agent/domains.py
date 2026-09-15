@@ -192,11 +192,11 @@ FINANCE_DOMAINS: tuple[FinanceDomain, ...] = (
         # CONFIRMED live (2026-09): get_accounts_receivable_summary, tested
         # against this tenant post-deploy, returned a real open item for
         # company code 1710 — the cube's Customer field IS modelled here after
-        # all. Portfolio summary only, though: API_CUSTOMER_INVOICE_SRV
-        # (single customer-invoice detail, dunning status) is still NOT
-        # connected — see the API list handed to the connectivity team. A
-        # specific "status of customer invoice X" question still has no live
-        # source and falls back to the knowledge base / handoff.
+        # all. Single customer-invoice detail is ALSO now wired (2026-09) via
+        # get_customer_invoice_status / API_CUSTOMER_INVOICE_SRV — but that
+        # path is unconfirmed against a live customer invoice ID (unlike the
+        # AR summary above); dunning status is still not modelled by any
+        # connected source. See s4hana.py's _CUSTOMER_INVOICE_SELECT comment.
         status="live",
         odata_services=("API_CUSTOMER_INVOICE_SRV", "API_OPLACCTGDOCITEMCUBE_SRV"),
         example_questions=(

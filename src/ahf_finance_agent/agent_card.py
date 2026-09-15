@@ -30,6 +30,7 @@ _DESCRIPTION = (
     "requisitions (incl. items, delivery schedule, approval, three-way "
     "match), goods receipts, vendor / business partner master data (incl. "
     "email and bank details, on request only), budget/availability-control, "
+    "accounts-receivable status (customer invoices and portfolio summary), "
     "and company code / cost centre / profit centre / G/L account master "
     "data and activity — all from SAP S/4HANA — and answers AP / procurement "
     "/ finance policy and process questions grounded in approved company "
@@ -55,6 +56,20 @@ def _skills() -> list[AgentSkill]:
             examples=[
                 "What's the status of invoice 5105601234 for fiscal year 2026?",
                 "Has invoice 5105601234 been paid?",
+            ],
+        ),
+        AgentSkill(
+            id="get_customer_invoice_status",
+            name="Get Customer Invoice Status",
+            description=(
+                "Look up the status and header details of a specific customer "
+                "(accounts-receivable) invoice in SAP S/4HANA by invoice "
+                "number — the AR mirror of Get Invoice Status."
+            ),
+            tags=["accounts receivable", "customer invoice", "status", "read-only"],
+            examples=[
+                "What's the status of customer invoice 9400001234?",
+                "Has customer invoice 9400001234 been posted?",
             ],
         ),
         AgentSkill(

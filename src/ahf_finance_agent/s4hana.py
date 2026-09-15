@@ -8,6 +8,7 @@ Lookup                       OData service                              Entity s
 ===========================  =========================================  ============================
 invoice status / by vendor   ``API_SUPPLIERINVOICE_PROCESS_SRV``        ``A_SupplierInvoice``
 invoice line items           ``API_SUPPLIERINVOICE_PROCESS_SRV``        ``A_SuplrInvcItemPurOrdRef``
+customer (AR) invoice status ``API_CUSTOMER_INVOICE_SRV``                ``A_CustomerInvoice`` (newly connected 2026-09, unconfirmed against a live ID)
 payment clearing             ``API_OPLACCTGDOCITEMCUBE_SRV``            ``A_OperationalAcctgDocItemCube`` (falls back to ``API_JOURNALENTRYITEMBASIC_SRV``)
 invoice -> payment status     ``…SUPPLIERINVOICE…`` + ``…JOURNALENTRY…``  (resolve FI doc, then clearing)
 purchase order status        ``API_PURCHASEORDER_PROCESS_SRV``          ``A_PurchaseOrder``
@@ -138,6 +139,23 @@ _INVOICE_SELECT = (
     "SupplierInvoiceStatus", "InvoicingParty", "InvoiceGrossAmount", "DocumentCurrency",
     "PaymentTerms", "DueCalculationBaseDate", "PaymentBlockingReason",
     "AccountingDocument", "AccountingDocumentType", "ReverseDocument",
+)
+
+_CUSTOMER_INVOICE_SRV = "API_CUSTOMER_INVOICE_SRV"
+_CUSTOMER_INVOICE_SET = "A_CustomerInvoice"
+# The AR mirror of A_SupplierInvoice above. Field list mirrors the released
+# SAP API_CUSTOMER_INVOICE_SRV schema — UNCONFIRMED against the S43 live
+# tenant (no live customer invoice ID has been run through this yet, unlike
+# _INVOICE_SELECT). Any field this build's CDS view omits is dropped by
+# _select_get()'s self-healing retry, same as "IsPaid" above; a dropped field
+# is not itself a sign this is broken. If the entity set name or the
+# CustomerInvoice/FiscalYear filter keys turn out wrong for this tenant, that
+# surfaces as an S4HANAError from get_customer_invoice_status, not silently.
+_CUSTOMER_INVOICE_SELECT = (
+    "CustomerInvoice", "FiscalYear", "CompanyCode", "Customer", "DocumentDate",
+    "PostingDate", "AccountingDocumentType", "DocumentCurrency",
+    "InvoiceReference", "InvoiceReferenceFiscalYear",
+    "CreatedByUser", "CreationDate", "LastChangeDate",
 )
 
 _PAYMENT_SRV = "API_JOURNALENTRYITEMBASIC_SRV"
@@ -387,10 +405,22 @@ _GL_MASTER_SELECT = (
 _SAP_CLIENT_OVERRIDE: dict[str, str] = {
     _PO_SRV: "100",  # API_PURCHASEORDER_PROCESS_SRV — confirmed 2026-09
     # Tried speculatively (2026-09) for goods-receipt lookups, which showed the
-    # same 401-shaped symptom as PO before the fix above. Unconfirmed — if GR
-    # lookups still fail (or now return empty/wrong data) after this, it was
-    # the wrong guess; remove these two lines rather than assume they're right.
+    # same 401-shaped symptom as PO before the fix above. _MATERIAL_DOC_SRV is
+    # still unconfirmed as a guess — if it starts failing (or returns
+    # empty/wrong data) with client 100, that was the wrong guess; remove that
+    # line rather than assume it's right.
     _MATERIAL_DOC_SRV: "100",
+    # API_GOODS_RECEIPT_SRV: client 100 is now CONFIRMED correct (2026-09 live
+    # test) — it stopped the 401 login-failure symptom, proving this candidate
+    # needs client 100 same as the others here. It now returns a clean 403
+    # instead: the destination user authenticates fine on client 100 but is
+    # not authorised for this specific OData service (see the 403 branch in
+    # _get() — activate it in /IWFND/MAINT_SERVICE + grant S_SERVICE, or add it
+    # to the communication arrangement). That is a genuine tenant-authorisation
+    # gap, not a client-selection bug, so do not "fix" it by changing the
+    # client again. The catalogue already treats 403 as "try next candidate"
+    # (_probe classifies it "absent"), so `goods_receipt_item` lookups already
+    # fail over to API_INBOUND_DELIVERY_SRV without any code change here.
     "API_GOODS_RECEIPT_SRV": "100",
     # Confirmed 2026-09: same client-100 pattern for the CO/FI master-data
     # services added alongside the PO/GR ones — user hit $metadata directly
@@ -413,6 +443,9 @@ _SAP_CLIENT_OVERRIDE: dict[str, str] = {
 _SERVICE_CATALOG: dict[str, tuple[tuple[str, str], ...]] = {
     "supplier_invoice_header": (
         (_INVOICE_SRV, _INVOICE_SET),
+    ),
+    "customer_invoice_header": (
+        (_CUSTOMER_INVOICE_SRV, _CUSTOMER_INVOICE_SET),
     ),
     "supplier_invoice_item": (
         (_INVOICE_SRV, _INVOICE_ITEM_SET),
@@ -1114,6 +1147,35 @@ class S4HANAClient:
             logger.warning(
                 "invoice %s matched %d rows across fiscal years; returning the most recent",
                 invoice, len(rows),
+            )
+        return rows[0] if rows else None
+
+    def get_customer_invoice_status(self, customer_invoice: str, fiscal_year: str | None = None) -> dict | None:
+        """Look up a single customer (AR) invoice by its number — the AR mirror
+        of :meth:`get_invoice_status`. Newly connected (2026-09) against
+        ``customer_invoice_header`` (``API_CUSTOMER_INVOICE_SRV`` /
+        ``A_CustomerInvoice``). Unlike :meth:`get_accounts_receivable_summary`,
+        whose journal-entry-cube fields are live-verified, no real customer
+        invoice ID has been run through this path yet — a ``None`` result here
+        is "no such record OR this candidate isn't usable on this tenant",
+        same ambiguity :meth:`get_accounts_receivable_summary` calls out for
+        its own AR field support, until confirmed via ``/diag/s4/samples``.
+
+        Same reasoning as ``get_invoice_status`` for using ``$filter`` and
+        making ``fiscal_year`` optional: the invoice number is unique enough
+        on its own; only pass a fiscal year to disambiguate a reused number.
+        """
+        filt = f"CustomerInvoice eq {_lit(customer_invoice)}"
+        if fiscal_year:
+            filt += f" and FiscalYear eq {_lit(fiscal_year)}"
+        rows = self._capability_query(
+            "customer_invoice_header", select=_CUSTOMER_INVOICE_SELECT,
+            filt=filt, top=5, orderby="PostingDate desc",
+        )
+        if len(rows) > 1:
+            logger.warning(
+                "customer invoice %s matched %d rows across fiscal years; returning the most recent",
+                customer_invoice, len(rows),
             )
         return rows[0] if rows else None
 

@@ -13,6 +13,7 @@ def test_specs_and_handlers_are_in_lockstep():
     # alongside them in TOOL_SPECS but is dispatched separately.
     assert set(TOOL_NAMES) == {
         "get_invoice_status",
+        "get_customer_invoice_status",
         "get_invoice_items",
         "search_invoices_by_vendor",
         "get_payment_clearing_status",
@@ -76,6 +77,16 @@ def test_dispatch_routes_to_client_and_marks_grounded_on_hit():
     assert s4.calls == [("get_invoice_status", ("5105601234", "2026"), {})]
     assert outcome.grounded is True
     assert outcome.content == {"found": True, "record": {"SupplierInvoice": "5105601234"}}
+
+
+def test_dispatch_routes_customer_invoice_status_and_marks_grounded_on_hit():
+    s4 = FakeS4HANAClient(get_customer_invoice_status={"CustomerInvoice": "9400001234"})
+    outcome = dispatch_tool(
+        "get_customer_invoice_status", '{"customer_invoice": "9400001234", "fiscal_year": "2026"}', s4
+    )
+    assert s4.calls == [("get_customer_invoice_status", ("9400001234", "2026"), {})]
+    assert outcome.grounded is True
+    assert outcome.content == {"found": True, "record": {"CustomerInvoice": "9400001234"}}
 
 
 def test_dispatch_miss_is_not_grounded():
