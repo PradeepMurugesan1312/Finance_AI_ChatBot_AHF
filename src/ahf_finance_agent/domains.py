@@ -193,10 +193,12 @@ FINANCE_DOMAINS: tuple[FinanceDomain, ...] = (
         # against this tenant post-deploy, returned a real open item for
         # company code 1710 — the cube's Customer field IS modelled here after
         # all. Single customer-invoice detail is ALSO now wired (2026-09) via
-        # get_customer_invoice_status / API_CUSTOMER_INVOICE_SRV — but that
-        # path is unconfirmed against a live customer invoice ID (unlike the
-        # AR summary above); dunning status is still not modelled by any
-        # connected source. See s4hana.py's _CUSTOMER_INVOICE_SELECT comment.
+        # get_customer_invoice_status / API_CUSTOMER_INVOICE_SRV, but post-
+        # deploy /diag/s4/catalog shows this tenant's user gets a clean 403 on
+        # that service (authorisation gap, not a wrong entity/field name — see
+        # s4hana.py's _CUSTOMER_INVOICE_SELECT comment) — needs a Basis grant
+        # (S_SERVICE / /IWFND/MAINT_SERVICE) before it returns real data here.
+        # Dunning status is still not modelled by any connected source.
         status="live",
         odata_services=("API_CUSTOMER_INVOICE_SRV", "API_OPLACCTGDOCITEMCUBE_SRV"),
         example_questions=(

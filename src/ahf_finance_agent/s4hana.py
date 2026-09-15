@@ -144,13 +144,19 @@ _INVOICE_SELECT = (
 _CUSTOMER_INVOICE_SRV = "API_CUSTOMER_INVOICE_SRV"
 _CUSTOMER_INVOICE_SET = "A_CustomerInvoice"
 # The AR mirror of A_SupplierInvoice above. Field list mirrors the released
-# SAP API_CUSTOMER_INVOICE_SRV schema — UNCONFIRMED against the S43 live
-# tenant (no live customer invoice ID has been run through this yet, unlike
-# _INVOICE_SELECT). Any field this build's CDS view omits is dropped by
-# _select_get()'s self-healing retry, same as "IsPaid" above; a dropped field
-# is not itself a sign this is broken. If the entity set name or the
-# CustomerInvoice/FiscalYear filter keys turn out wrong for this tenant, that
-# surfaces as an S4HANAError from get_customer_invoice_status, not silently.
+# SAP API_CUSTOMER_INVOICE_SRV schema. CONFIRMED live 2026-09 (post-deploy,
+# via GET /diag/s4/catalog): the entity set name is right — Gateway recognises
+# it — but the S43 destination user gets a clean 403 ("authenticated but not
+# authorised for this OData service"), the same shape already seen on
+# API_GOODS_RECEIPT_SRV (see _SAP_CLIENT_OVERRIDE). That means this is a
+# genuine tenant-authorisation gap (activate in /IWFND/MAINT_SERVICE + grant
+# S_SERVICE, or add to the communication arrangement), NOT a wrong client —
+# a 403 (vs. the 401 a wrong client produces) means the client is already
+# right, so do not add this service to _SAP_CLIENT_OVERRIDE on the strength of
+# this alone. Field-name correctness (CustomerInvoice/FiscalYear/etc.) is
+# still unverified since no call has gotten past the 403 to return real rows;
+# any this build's CDS view omits is dropped by _select_get()'s self-healing
+# retry, same as "IsPaid" above.
 _CUSTOMER_INVOICE_SELECT = (
     "CustomerInvoice", "FiscalYear", "CompanyCode", "Customer", "DocumentDate",
     "PostingDate", "AccountingDocumentType", "DocumentCurrency",
