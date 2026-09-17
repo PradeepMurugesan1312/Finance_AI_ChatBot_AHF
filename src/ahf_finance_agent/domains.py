@@ -41,7 +41,10 @@ FINANCE_DOMAINS: tuple[FinanceDomain, ...] = (
         name="Accounts Payable",
         sap_area="FI-AP",
         status="live",
-        odata_services=("API_SUPPLIERINVOICE_PROCESS_SRV", "API_SUPPLIER_INVOICE_ITEM_SRV", "API_OPLACCTGDOCITEMCUBE_SRV"),
+        odata_services=(
+            "API_SUPPLIERINVOICE_PROCESS_SRV", "API_SUPPLIER_INVOICE_ITEM_SRV",
+            "API_OPLACCTGDOCITEMCUBE_SRV", "API_COMPANYCODE_SRV",
+        ),
         example_questions=(
             "What's the status of invoice 5105601234?",
             "Is invoice 5105601234 blocked for payment, and why?",
@@ -59,6 +62,7 @@ FINANCE_DOMAINS: tuple[FinanceDomain, ...] = (
             "Break down our open payables for company code 1710 by aging bucket.",
             "Who are our top 5 vendors by open payable amount for company code 1710?",
             "On average, how many days does it take us to clear an invoice for vendor 100000?",
+            "Which companies have an open AP or AR balance right now?",
         ),
         kb_docs=("invoice_payment_terms.md",),
     ),
@@ -207,6 +211,7 @@ FINANCE_DOMAINS: tuple[FinanceDomain, ...] = (
             "When do we write off a bad debt?",
             "What are standard customer payment terms?",
             "What's the status of customer invoice 9400001234?",
+            "Which companies have an open AP or AR balance right now?",
         ),
         kb_docs=("accounts_receivable.md",),
     ),

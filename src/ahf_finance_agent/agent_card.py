@@ -257,6 +257,21 @@ def _skills() -> list[AgentSkill]:
             examples=["What currency and chart of accounts does company code 1710 use?"],
         ),
         AgentSkill(
+            id="list_companies_with_open_ap_ar_balance",
+            name="List Companies With Open AP/AR Balance",
+            description=(
+                "List which company codes in SAP S/4HANA currently have an "
+                "open accounts-payable and/or accounts-receivable balance — "
+                "the only lookup here that doesn't need a company code "
+                "named up front."
+            ),
+            tags=["accounts payable", "accounts receivable", "company code", "read-only"],
+            examples=[
+                "Which companies have an open AP or AR balance?",
+                "List all company codes with outstanding payables or receivables.",
+            ],
+        ),
+        AgentSkill(
             id="get_cost_center_details",
             name="Get Cost Center Details",
             description=(

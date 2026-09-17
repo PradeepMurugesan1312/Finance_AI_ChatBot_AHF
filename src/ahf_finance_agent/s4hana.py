@@ -2979,6 +2979,86 @@ class S4HANAClient:
         accounts, fiscal year variant."""
         return self._capability_entity("company_code", _lit(company_code), _CC_SELECT)
 
+    # Cap on company codes scanned by list_companies_with_open_ap_ar_balance
+    # below. Company codes are master data (a handful per landscape, not
+    # thousands like suppliers), so this can stay small — it exists to bound
+    # the worst case, not because this tenant is expected to hit it.
+    _COMPANY_CODE_SCAN_CAP = 20
+
+    def list_companies_with_open_ap_ar_balance(self, *, cap: int | None = None) -> dict:
+        """The only company-code-agnostic entry point in this module: every
+        other AP/AR tool needs a specific company code up front, so "which
+        companies currently have an open AP or AR balance" has no single-call
+        answer otherwise. Lists company codes (up to `cap`, master data) and,
+        for each, reuses :meth:`get_accounts_payable_summary` /
+        :meth:`get_accounts_receivable_summary` verbatim — same
+        journal_entry_item cube, same open-items cap, same caveats — so a
+        figure reported here matches what those tools would say if asked
+        about that company code directly.
+
+        Cost scales with the number of company codes on the tenant (each one
+        costs the same two open-items scans get_accounts_payable_summary /
+        get_accounts_receivable_summary already do): keep `cap` modest. Only
+        company codes with at least one open AP or AR item are returned —
+        `companyCodesScanned` says how many were checked either way.
+        """
+        scan_cap = cap or self._COMPANY_CODE_SCAN_CAP
+        try:
+            codes, codes_capped = _paged_fetch(
+                lambda skip, top: self._capability_query(
+                    "company_code", select=("CompanyCode", "CompanyCodeName"),
+                    filt=None, top=top, skip=skip,
+                ),
+                max_pages=self._pages_for(scan_cap),
+            )
+        except S4HANAError as exc:
+            return {
+                "companies": [], "connected": False, "companyCodesScanned": 0,
+                "message": f"Company code lookup is not available on this system: {exc}",
+            }
+        companies: list[dict] = []
+        for row in codes:
+            cc = row.get("CompanyCode")
+            if not cc:
+                continue
+            ap = self.get_accounts_payable_summary(cc)
+            ar = self.get_accounts_receivable_summary(cc)
+            has_ap = bool(ap.get("connected")) and (ap.get("openItemCount") or 0) > 0
+            has_ar = bool(ar.get("connected")) and (ar.get("openItemCount") or 0) > 0
+            if not (has_ap or has_ar):
+                continue
+            companies.append({
+                "companyCode": cc,
+                "companyCodeName": row.get("CompanyCodeName"),
+                "hasApBalance": has_ap,
+                "hasArBalance": has_ar,
+                "apOpenItemCount": ap.get("openItemCount") if has_ap else None,
+                "apNetOpenAmount": ap.get("netOpenAmount") if has_ap else None,
+                "apCurrency": ap.get("currency") if has_ap else None,
+                "arOpenItemCount": ar.get("openItemCount") if has_ar else None,
+                "arNetOpenAmount": ar.get("netOpenAmount") if has_ar else None,
+                "arCurrency": ar.get("currency") if has_ar else None,
+            })
+        return {
+            "companies": companies,
+            "connected": True,
+            "companyCodesScanned": len(codes),
+            "companyCodesCapped": codes_capped,
+            "note": (
+                f"Scanned {len(codes)} company code(s)"
+                + (" (capped — there may be more company codes not scanned)" if codes_capped else "")
+                + f", listing only those with at least one open AP or AR item (up to "
+                f"{self._OPEN_ITEMS_TOP} postings scanned per side per company code, "
+                "most recent first — same cap and caveats as "
+                "get_accounts_payable_summary / get_accounts_receivable_summary: NOT "
+                "an official aging report, directional only). A company code absent "
+                "from this list either has no open items or this tenant's AR field "
+                "support is unconfirmed for it (same ambiguity "
+                "get_accounts_receivable_summary calls out) — treat absence as "
+                "inconclusive for AR, not a confirmed zero."
+            ),
+        }
+
     def get_cost_center_details(self, cost_center: str, controlling_area: str | None = None) -> dict | None:
         """Cost centre master data — validity, responsible person, category,
         assigned profit centre and company code. This is MASTER DATA (who owns

@@ -161,6 +161,11 @@ class FakeS4HANAClient:
     def get_company_code_details(self, *a, **k):
         return self._canned("get_company_code_details", *a, **k)
 
+    def list_companies_with_open_ap_ar_balance(self, *a, **k):
+        return self._canned("list_companies_with_open_ap_ar_balance", *a, **k) or {
+            "connected": False, "companies": [],
+        }
+
     def get_cost_center_details(self, *a, **k):
         return self._canned("get_cost_center_details", *a, **k)
 

@@ -56,6 +56,7 @@ def test_specs_and_handlers_are_in_lockstep():
         "count_new_vendors",
         "count_blocked_vendors",
         "search_vendors_by_name",
+        "list_companies_with_open_ap_ar_balance",
     }
     assert spec_names == set(TOOL_NAMES) | {"search_policy_docs"}
 
@@ -87,6 +88,18 @@ def test_dispatch_routes_customer_invoice_status_and_marks_grounded_on_hit():
     assert s4.calls == [("get_customer_invoice_status", ("9400001234", "2026"), {})]
     assert outcome.grounded is True
     assert outcome.content == {"found": True, "record": {"CustomerInvoice": "9400001234"}}
+
+
+def test_dispatch_lists_companies_with_open_balance_and_marks_grounded():
+    canned = {
+        "connected": True,
+        "companies": [{"companyCode": "1710", "hasApBalance": True, "hasArBalance": False}],
+    }
+    s4 = FakeS4HANAClient(list_companies_with_open_ap_ar_balance=canned)
+    outcome = dispatch_tool("list_companies_with_open_ap_ar_balance", "{}", s4)
+    assert s4.calls == [("list_companies_with_open_ap_ar_balance", (), {})]
+    assert outcome.grounded is True
+    assert outcome.content == canned
 
 
 def test_dispatch_miss_is_not_grounded():

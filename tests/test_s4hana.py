@@ -1401,6 +1401,53 @@ def test_accounts_payable_summary_overdue_count_and_amount(fake_s4):
     assert out["overdueAmount"] == 500.0
 
 
+def test_list_companies_with_open_balance_reuses_ap_ar_summary_per_code(fake_s4):
+    fake_s4.routes["/A_CompanyCode"] = {
+        "json": _d([
+            {"CompanyCode": "1710", "CompanyCodeName": "US Ops"},
+            {"CompanyCode": "2000", "CompanyCodeName": "DE Ops"},
+        ])
+    }
+    fake_s4.routes["/A_OperationalAcctgDocItemCube"] = {
+        "json": _d([
+            {
+                "CompanyCode": "1710", "Supplier": "100000", "AmountInCompanyCodeCurrency": "500.00",
+                "CompanyCodeCurrency": "USD", "DebitCreditCode": "H", "ClearingDate": None,
+            },
+            {
+                "CompanyCode": "1710", "Customer": "200000", "AmountInCompanyCodeCurrency": "300.00",
+                "CompanyCodeCurrency": "USD", "DebitCreditCode": "S", "ClearingDate": None,
+            },
+        ])
+    }
+    out = S4HANAClient(_settings()).list_companies_with_open_ap_ar_balance()
+    assert out["connected"] is True
+    assert out["companyCodesScanned"] == 2
+    codes = {c["companyCode"] for c in out["companies"]}
+    assert codes == {"1710", "2000"}
+    for c in out["companies"]:
+        assert c["hasApBalance"] is True
+        assert c["hasArBalance"] is True
+        assert c["apOpenItemCount"] == 1
+        assert c["arOpenItemCount"] == 1
+
+
+def test_list_companies_with_open_balance_omits_companies_with_none(fake_s4):
+    fake_s4.routes["/A_CompanyCode"] = {"json": _d([{"CompanyCode": "1710", "CompanyCodeName": "US Ops"}])}
+    fake_s4.routes["/A_OperationalAcctgDocItemCube"] = {"json": _d([])}
+    out = S4HANAClient(_settings()).list_companies_with_open_ap_ar_balance()
+    assert out["connected"] is True
+    assert out["companyCodesScanned"] == 1
+    assert out["companies"] == []
+
+
+def test_list_companies_with_open_balance_not_connected_when_company_code_lookup_fails(fake_s4):
+    fake_s4.routes["/A_CompanyCode"] = {"status": 500, "text": "boom"}
+    out = S4HANAClient(_settings()).list_companies_with_open_ap_ar_balance()
+    assert out["connected"] is False
+    assert out["companies"] == []
+
+
 def test_list_open_invoices_for_vendor_sums_line_items_and_excludes_cleared(fake_s4):
     fake_s4.routes["/A_OperationalAcctgDocItemCube"] = {
         "json": _d([

@@ -180,6 +180,11 @@ def _get_company_code_details(c: S4HANAClient, a: dict) -> ToolOutcome:
     return _record(c.get_company_code_details(_req(a, "company_code")))
 
 
+def _list_companies_with_open_ap_ar_balance(c: S4HANAClient, a: dict) -> ToolOutcome:
+    result = c.list_companies_with_open_ap_ar_balance()
+    return ToolOutcome(result, grounded=bool(result.get("connected")))
+
+
 def _get_cost_center_details(c: S4HANAClient, a: dict) -> ToolOutcome:
     return _record(c.get_cost_center_details(_req(a, "cost_center"), a.get("controlling_area") or None))
 
@@ -358,6 +363,7 @@ _HANDLERS: dict[str, Callable[[S4HANAClient, dict], ToolOutcome]] = {
     "get_vendor_bank_accounts": _get_vendor_bank_accounts,
     "get_budget_status": _get_budget_status,
     "get_company_code_details": _get_company_code_details,
+    "list_companies_with_open_ap_ar_balance": _list_companies_with_open_ap_ar_balance,
     "get_cost_center_details": _get_cost_center_details,
     "get_profit_center_details": _get_profit_center_details,
     "get_gl_account_master": _get_gl_account_master,
@@ -660,6 +666,24 @@ TOOL_SPECS: list[dict] = [
         "fiscal year variant is company code X on'.",
         {"company_code": {"type": "string", "description": "Company code, e.g. 1710"}},
         ["company_code"],
+    ),
+    _fn(
+        "list_companies_with_open_ap_ar_balance",
+        "The ONLY tool here that does not need a company code up front — use it "
+        "for 'which companies have an open AP/AR balance', 'list all company "
+        "codes with outstanding payables or receivables', or as the first step "
+        "when the user wants a cross-company view instead of naming one company "
+        "code. Scans a capped set of company codes and, for each, computes the "
+        "SAME open AP/AR figures get_accounts_payable_summary / "
+        "get_accounts_receivable_summary would report (identical cube, cap, and "
+        "caveats — NOT an official aging report, directional only). Returns "
+        "ONLY company codes with at least one open AP or AR item, each flagged "
+        "hasApBalance / hasArBalance so you can further filter to 'both' "
+        "yourself if asked. A company code not in the result either has no open "
+        "items or this tenant's AR field support is unconfirmed for it — relay "
+        "the note verbatim rather than asserting a confirmed zero for AR.",
+        {},
+        [],
     ),
     _fn(
         "get_cost_center_details",
