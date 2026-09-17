@@ -63,12 +63,13 @@ the first that answers; ``GET /diag/s4/catalog`` reports what resolved.
 
 from __future__ import annotations
 
+import calendar
 import functools
 import logging
 import re
 import threading
 import time
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta, timezone
 from typing import Any, Callable
 
 import httpx
@@ -656,6 +657,39 @@ def _sap_date_ms(value: Any) -> int | None:
         return None
     m = _SAP_DATE_MS_RE.search(value)
     return int(m.group(1)) if m else None
+
+
+def _month_end_ms(month: str) -> float:
+    """End-of-month epoch ms (23:59:59 UTC on the month's last calendar day)
+    for a ``"YYYY-MM"`` string, so an "as of this month" balance question can
+    be compared against the same ``/Date(...)/`` epoch-ms fields as
+    ClearingDate / PostingDate. Raises ``ValueError`` on a malformed month —
+    ``dispatch_tool`` already turns that into a clean "invalid tool argument"
+    for the model, same as any other malformed date arg it hands off."""
+    try:
+        year_s, month_s = month.strip().split("-")
+        year, mon = int(year_s), int(month_s)
+    except (ValueError, AttributeError):
+        raise ValueError(f"expected a month as 'YYYY-MM', got {month!r}") from None
+    if not 1 <= mon <= 12:
+        raise ValueError(f"expected a month as 'YYYY-MM', got {month!r}")
+    last_day = calendar.monthrange(year, mon)[1]
+    end = datetime(year, mon, last_day, 23, 59, 59, tzinfo=timezone.utc)
+    return end.timestamp() * 1000
+
+
+def _open_as_of(item: dict, as_of_ms: float | None) -> bool:
+    """Whether a journal-entry line counts as still open (uncleared) — as of
+    now when ``as_of_ms`` is ``None`` (ClearingDate simply not set), or as of
+    a specific point in time otherwise (ClearingDate not set, or set to a
+    date strictly after ``as_of_ms`` — i.e. still open at that point even
+    though it has since cleared)."""
+    if not _is_set(item.get("ClearingDate")):
+        return True
+    if as_of_ms is None:
+        return False
+    clearing_ms = _sap_date_ms(item.get("ClearingDate"))
+    return clearing_ms is not None and clearing_ms > as_of_ms
 
 
 def _is_currently_valid(start: Any, end: Any) -> bool | None:
@@ -1940,6 +1974,7 @@ class S4HANAClient:
 
     def get_accounts_payable_summary(
         self, company_code: str, vendor: str | None = None, fiscal_year: str | None = None,
+        *, as_of_month: str | None = None,
     ) -> dict:
         """Computed, best-effort AP OPEN ITEMS summary for a company code
         (optionally scoped to one vendor): count and net amount of vendor
@@ -1956,11 +1991,22 @@ class S4HANAClient:
         postings — point the user at the AP aging report / FBL1N for a
         definitive, complete figure.
 
+        ``as_of_month`` (``"YYYY-MM"``) reconstructs the balance AS OF that
+        month's last day instead of right now: postings after that date are
+        excluded entirely, and an item cleared after that date still counts
+        as open (see :func:`_open_as_of`). Computed from the SAME capped,
+        most-recent-postings-first scan as the "now" case — for a month
+        other than the current one, the requested month's postings may fall
+        outside the scanned window on a company code with heavy volume, so
+        this gets progressively less reliable the further back it looks (the
+        note says so whenever the scan was capped).
+
         The "Supplier" field this relies on is CONFIRMED present on this
         tenant (already used by :meth:`get_payment_clearing_status`), so
         unlike the AR counterpart this does not need to detect a missing
         field — a connection failure here is a genuine S4HANAError.
         """
+        as_of_ms = _month_end_ms(as_of_month) if as_of_month else None
         filt = f"CompanyCode eq {_lit(company_code)}"
         if vendor:
             filt += f" and Supplier eq {_lit(vendor)}"
@@ -1971,15 +2017,21 @@ class S4HANAClient:
         except S4HANAError as exc:
             return {
                 "companyCode": company_code, "vendor": vendor, "fiscalYear": fiscal_year,
+                "asOfMonth": as_of_month,
                 "connected": False, "openItemCount": None, "netOpenAmount": None,
                 "message": f"AP open-items lookup is not available on this system: {exc}",
             }
         vendor_lines = [it for it in items if _is_set(it.get("Supplier"))]
-        open_lines = [it for it in vendor_lines if not _is_set(it.get("ClearingDate"))]
+        if as_of_ms is not None:
+            vendor_lines = [it for it in vendor_lines if (_sap_date_ms(it.get("PostingDate")) or 0) <= as_of_ms]
+        open_lines = [it for it in vendor_lines if _open_as_of(it, as_of_ms)]
         # Overdue = open AND past its net due date. NetDueDate is confirmed
         # present on this tenant's journal-entry cube (live payload used to
         # design the count-tool family this session). Computed from the SAME
         # already-fetched, already-capped open_lines — no extra HTTP call.
+        # "Now" for overdue purposes is always the real current time, even
+        # for an as_of_month snapshot — "was this overdue as of that month"
+        # isn't something either tool needs today.
         now_ms = time.time() * 1000
         overdue_lines = [ln for ln in open_lines if (_sap_date_ms(ln.get("NetDueDate")) or 0) < now_ms]
         net, currency = self._net_posted_amount(open_lines)
@@ -1988,6 +2040,7 @@ class S4HANAClient:
             "companyCode": company_code,
             "vendor": vendor,
             "fiscalYear": fiscal_year,
+            "asOfMonth": as_of_month,
             "connected": True,
             "openItemCount": len(open_lines),
             # _net_posted_amount is debits-positive / credits-negative; a vendor
@@ -2002,28 +2055,43 @@ class S4HANAClient:
             "currency": currency,
             "postingsScanned": len(items),
             "note": (
-                f"Computed from up to {self._OPEN_ITEMS_TOP} of the most recent postings "
+                (
+                    f"Balance AS OF {as_of_month} (that month's last day): postings after "
+                    "it are excluded, and an item cleared after it still counts as open. "
+                    if as_of_month else ""
+                )
+                + f"Computed from up to {self._OPEN_ITEMS_TOP} of the most recent postings "
                 "in scope"
                 + (" (truncated, there may be more)" if capped else "")
+                + (
+                    " — for a past month specifically, this cap means the requested "
+                    "month's postings can fall outside the scanned window on a "
+                    "high-volume company code, undercounting more the further back it "
+                    "looks."
+                    if as_of_month and capped else ""
+                )
                 + ". NOT an official AP aging report (no day-based aging buckets, "
                 "no dispute status). overdueCount/overdueAmount are the subset of the "
-                "open items above already past NetDueDate, same cap, not a separate "
-                "fetch. A negative figure can be genuine (e.g. debit memos "
-                "or partial reversals among the open items scanned), but the debit/credit "
-                "sign convention here has not been independently verified against a known "
-                "invoice on this tenant. If the sign looks surprising, say so rather than "
-                "asserting it confidently. If there are more open items than scanned, this "
-                "under-counts. Point to the AP aging report / FBL1N for a definitive figure."
+                "open items above already past NetDueDate (as of right now, not the "
+                "as-of month), same cap, not a separate fetch. A negative figure can be "
+                "genuine (e.g. debit memos or partial reversals among the open items "
+                "scanned), but the debit/credit sign convention here has not been "
+                "independently verified against a known invoice on this tenant. If the "
+                "sign looks surprising, say so rather than asserting it confidently. If "
+                "there are more open items than scanned, this under-counts. Point to the "
+                "AP aging report / FBL1N for a definitive figure."
             ),
         }
 
     def get_accounts_receivable_summary(
         self, company_code: str, customer: str | None = None, fiscal_year: str | None = None,
+        *, as_of_month: str | None = None,
     ) -> dict:
         """Computed, best-effort AR OPEN ITEMS summary — the customer-side
         mirror of :meth:`get_accounts_payable_summary`, same cube, same
         caveats (no aging buckets, capped postings, sign convention not
-        independently verified).
+        independently verified). ``as_of_month`` works exactly the same way
+        as on the AP version — see its docstring.
 
         The "Customer" field this needs is now CONFIRMED present on this
         tenant (see the ``_OPEN_ITEMS_SELECT`` comment — a live post-deploy
@@ -2034,6 +2102,7 @@ class S4HANAClient:
         insurance for a different tenant/build, not because this one is in
         doubt any more.
         """
+        as_of_ms = _month_end_ms(as_of_month) if as_of_month else None
         filt = f"CompanyCode eq {_lit(company_code)}"
         if customer:
             filt += f" and Customer eq {_lit(customer)}"
@@ -2044,6 +2113,7 @@ class S4HANAClient:
         except S4HANAError as exc:
             return {
                 "companyCode": company_code, "customer": customer, "fiscalYear": fiscal_year,
+                "asOfMonth": as_of_month,
                 "connected": False, "openItemCount": None, "netOpenAmount": None,
                 "message": f"AR open-items lookup is not available on this system: {exc}",
             }
@@ -2056,6 +2126,7 @@ class S4HANAClient:
             # branch below exists to avoid).
             return {
                 "companyCode": company_code, "customer": customer, "fiscalYear": fiscal_year,
+                "asOfMonth": as_of_month,
                 "connected": None, "openItemCount": None, "netOpenAmount": None,
                 "message": (
                     "No postings matched, so there is nothing to sum, but this tenant's "
@@ -2068,6 +2139,7 @@ class S4HANAClient:
         if not any("Customer" in it for it in items):
             return {
                 "companyCode": company_code, "customer": customer, "fiscalYear": fiscal_year,
+                "asOfMonth": as_of_month,
                 "connected": False, "openItemCount": None, "netOpenAmount": None,
                 "message": (
                     "This tenant's journal-entry service does not expose a Customer "
@@ -2077,12 +2149,15 @@ class S4HANAClient:
                 ),
             }
         customer_lines = [it for it in items if _is_set(it.get("Customer"))]
-        open_lines = [it for it in customer_lines if not _is_set(it.get("ClearingDate"))]
+        if as_of_ms is not None:
+            customer_lines = [it for it in customer_lines if (_sap_date_ms(it.get("PostingDate")) or 0) <= as_of_ms]
+        open_lines = [it for it in customer_lines if _open_as_of(it, as_of_ms)]
         net, currency = self._net_posted_amount(open_lines)
         return {
             "companyCode": company_code,
             "customer": customer,
             "fiscalYear": fiscal_year,
+            "asOfMonth": as_of_month,
             "connected": True,
             "openItemCount": len(open_lines),
             # A receivable is booked as a debit to the customer account, so
@@ -2092,9 +2167,21 @@ class S4HANAClient:
             "currency": currency,
             "postingsScanned": len(items),
             "note": (
-                f"Computed from up to {self._OPEN_ITEMS_TOP} of the most recent postings "
+                (
+                    f"Balance AS OF {as_of_month} (that month's last day): postings after "
+                    "it are excluded, and an item cleared after it still counts as open. "
+                    if as_of_month else ""
+                )
+                + f"Computed from up to {self._OPEN_ITEMS_TOP} of the most recent postings "
                 "in scope"
                 + (" (truncated, there may be more)" if capped else "")
+                + (
+                    " — for a past month specifically, this cap means the requested "
+                    "month's postings can fall outside the scanned window on a "
+                    "high-volume company code, undercounting more the further back it "
+                    "looks."
+                    if as_of_month and capped else ""
+                )
                 + ". NOT an official AR aging report (no day-based aging buckets, "
                 "no dispute/dunning status). The debit/credit sign convention has not been "
                 "independently verified against a known customer invoice on this tenant. "

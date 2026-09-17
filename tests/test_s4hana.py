@@ -1029,6 +1029,47 @@ def test_get_accounts_payable_summary_reports_error_cleanly(fake_s4):
     assert "not available" in out["message"].lower()
 
 
+def test_get_accounts_payable_summary_as_of_month_reconstructs_past_balance(fake_s4):
+    fake_s4.routes["/A_OperationalAcctgDocItemCube"] = {
+        "json": _d([
+            # posted in August, cleared in September -> still open AS OF August
+            {"CompanyCode": "1710", "Supplier": "100000", "AmountInCompanyCodeCurrency": "5000.00",
+             "CompanyCodeCurrency": "USD", "DebitCreditCode": "H",
+             "PostingDate": "/Date(1786752000000)/", "ClearingDate": "/Date(1788566400000)/"},
+            # posted in August, cleared in August -> NOT open as of August
+            {"CompanyCode": "1710", "Supplier": "100000", "AmountInCompanyCodeCurrency": "1000.00",
+             "CompanyCodeCurrency": "USD", "DebitCreditCode": "H",
+             "PostingDate": "/Date(1786320000000)/", "ClearingDate": "/Date(1787184000000)/"},
+            # posted in September (after the as-of month) -> excluded entirely
+            {"CompanyCode": "1710", "Supplier": "100000", "AmountInCompanyCodeCurrency": "9000.00",
+             "CompanyCodeCurrency": "USD", "DebitCreditCode": "H",
+             "PostingDate": "/Date(1788307200000)/", "ClearingDate": None},
+        ])
+    }
+    out = S4HANAClient(_settings()).get_accounts_payable_summary("1710", as_of_month="2026-08")
+    assert out["connected"] is True
+    assert out["asOfMonth"] == "2026-08"
+    assert out["openItemCount"] == 1
+    assert out["netOpenAmount"] == 5000.0
+    assert "AS OF 2026-08" in out["note"]
+
+
+def test_get_accounts_payable_summary_as_of_month_default_none_unchanged(fake_s4):
+    fake_s4.routes["/A_OperationalAcctgDocItemCube"] = {
+        "json": _d([{"CompanyCode": "1710", "Supplier": "100000", "AmountInCompanyCodeCurrency": "5000.00",
+                      "CompanyCodeCurrency": "USD", "DebitCreditCode": "H", "ClearingDate": None}])
+    }
+    out = S4HANAClient(_settings()).get_accounts_payable_summary("1710")
+    assert out["asOfMonth"] is None
+    assert "AS OF" not in out["note"]
+
+
+def test_get_accounts_payable_summary_as_of_month_rejects_malformed_month(fake_s4):
+    with pytest.raises(ValueError, match="YYYY-MM"):
+        S4HANAClient(_settings()).get_accounts_payable_summary("1710", as_of_month="not-a-month")
+    assert fake_s4.requests == []  # never even reached S/4HANA
+
+
 def test_get_accounts_receivable_summary_sums_open_customer_items(fake_s4):
     fake_s4.routes["/A_OperationalAcctgDocItemCube"] = {
         "json": _d([

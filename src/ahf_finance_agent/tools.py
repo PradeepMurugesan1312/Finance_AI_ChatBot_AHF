@@ -203,14 +203,16 @@ def _get_gl_account_activity(c: S4HANAClient, a: dict) -> ToolOutcome:
 
 def _get_accounts_payable_summary(c: S4HANAClient, a: dict) -> ToolOutcome:
     result = c.get_accounts_payable_summary(
-        _req(a, "company_code"), a.get("vendor") or None, a.get("fiscal_year") or None
+        _req(a, "company_code"), a.get("vendor") or None, a.get("fiscal_year") or None,
+        as_of_month=a.get("as_of_month") or None,
     )
     return ToolOutcome(result, grounded=bool(result.get("connected")))
 
 
 def _get_accounts_receivable_summary(c: S4HANAClient, a: dict) -> ToolOutcome:
     result = c.get_accounts_receivable_summary(
-        _req(a, "company_code"), a.get("customer") or None, a.get("fiscal_year") or None
+        _req(a, "company_code"), a.get("customer") or None, a.get("fiscal_year") or None,
+        as_of_month=a.get("as_of_month") or None,
     )
     return ToolOutcome(result, grounded=bool(result.get("connected")))
 
@@ -767,13 +769,25 @@ TOOL_SPECS: list[dict] = [
         "amount owed), plus overdueCount/overdueAmount (the subset already past "
         "NetDueDate). NOT an official AP aging report — no day-based aging buckets, "
         "capped at the most recent ~200 postings scanned (under-counts if there are "
-        "more — the note says when it was truncated). Always relay the note "
-        "verbatim and point to the AP aging report / FBL1N for a definitive figure "
-        "— treat this as directional, not final.",
+        "more — the note says when it was truncated). Pass as_of_month ('YYYY-MM') "
+        "for 'what was the balance THIS MONTH / last month / in <month>' instead "
+        "of the current live figure — reconstructs the balance as of that month's "
+        "last day (postings after it excluded, items cleared after it still count "
+        "as open). Gets less reliable the further back the month is (say so if the "
+        "note flags truncation). Always relay the note verbatim and point to the "
+        "AP aging report / FBL1N for a definitive figure — treat this as "
+        "directional, not final.",
         {
             "company_code": {"type": "string", "description": "Company code, e.g. 1710"},
             "vendor": {"type": "string", "description": "Optional supplier/vendor number to scope to one vendor."},
             "fiscal_year": {"type": "string", "description": "Optional 4-digit fiscal year."},
+            "as_of_month": {
+                "type": "string",
+                "description": (
+                    "Optional 'YYYY-MM' — get the balance as of that month's last day "
+                    "instead of right now, e.g. for 'this month' or 'August'."
+                ),
+            },
         },
         ["company_code"],
     ),
@@ -788,11 +802,20 @@ TOOL_SPECS: list[dict] = [
         "expected and should be relayed honestly (fall back to search_policy_docs "
         "for AR policy/process and hand off for the live figure), not treated as a "
         "tool error. When connected=true, same caveats as the AP version apply: "
-        "not an official aging report, capped at ~200 postings, treat as directional.",
+        "not an official aging report, capped at ~200 postings, treat as "
+        "directional. Pass as_of_month ('YYYY-MM') for 'what was the balance THIS "
+        "MONTH / last month / in <month>' — same reconstruction as the AP version.",
         {
             "company_code": {"type": "string", "description": "Company code, e.g. 1710"},
             "customer": {"type": "string", "description": "Optional customer number to scope to one customer."},
             "fiscal_year": {"type": "string", "description": "Optional 4-digit fiscal year."},
+            "as_of_month": {
+                "type": "string",
+                "description": (
+                    "Optional 'YYYY-MM' — get the balance as of that month's last day "
+                    "instead of right now, e.g. for 'this month' or 'August'."
+                ),
+            },
         },
         ["company_code"],
     ),

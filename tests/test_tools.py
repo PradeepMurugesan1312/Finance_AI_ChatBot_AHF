@@ -406,7 +406,7 @@ def test_dispatch_accounts_payable_summary():
     outcome = dispatch_tool(
         "get_accounts_payable_summary", '{"company_code": "1710", "vendor": "100000"}', s4
     )
-    assert s4.calls == [("get_accounts_payable_summary", ("1710", "100000", None), {})]
+    assert s4.calls == [("get_accounts_payable_summary", ("1710", "100000", None), {"as_of_month": None})]
     assert outcome.grounded is True
     assert outcome.content["openItemCount"] == 3
 
@@ -420,7 +420,7 @@ def test_dispatch_accounts_payable_summary():
 def test_dispatch_accounts_receivable_summary_not_connected_is_not_grounded():
     s4 = FakeS4HANAClient(get_accounts_receivable_summary={"connected": False, "message": "not available"})
     outcome = dispatch_tool("get_accounts_receivable_summary", '{"company_code": "1710"}', s4)
-    assert s4.calls == [("get_accounts_receivable_summary", ("1710", None, None), {})]
+    assert s4.calls == [("get_accounts_receivable_summary", ("1710", None, None), {"as_of_month": None})]
     assert outcome.grounded is False
     assert outcome.content["connected"] is False
 
@@ -432,7 +432,7 @@ def test_dispatch_accounts_receivable_summary_connected_is_grounded():
     outcome = dispatch_tool(
         "get_accounts_receivable_summary", '{"company_code": "1710", "customer": "200000"}', s4
     )
-    assert s4.calls == [("get_accounts_receivable_summary", ("1710", "200000", None), {})]
+    assert s4.calls == [("get_accounts_receivable_summary", ("1710", "200000", None), {"as_of_month": None})]
     assert outcome.grounded is True
 
 
