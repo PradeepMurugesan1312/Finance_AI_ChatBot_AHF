@@ -679,9 +679,13 @@ TOOL_SPECS: list[dict] = [
         "caveats — NOT an official aging report, directional only). Returns "
         "ONLY company codes with at least one open AP or AR item, each flagged "
         "hasApBalance / hasArBalance so you can further filter to 'both' "
-        "yourself if asked. A company code not in the result either has no open "
-        "items or this tenant's AR field support is unconfirmed for it — relay "
-        "the note verbatim rather than asserting a confirmed zero for AR.",
+        "yourself if asked. Deliberately checks only a SMALL sample of company "
+        "codes (each one is several sequential S/4HANA calls, so this is slower "
+        "than the other tools here) — always relay companyCodesScanned / the "
+        "capped note so the user knows this is a sample, not a complete list. A "
+        "company code not in the result either has no open items or this "
+        "tenant's AR field support is unconfirmed for it — relay the note "
+        "verbatim rather than asserting a confirmed zero for AR.",
         {},
         [],
     ),

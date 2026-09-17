@@ -2980,10 +2980,16 @@ class S4HANAClient:
         return self._capability_entity("company_code", _lit(company_code), _CC_SELECT)
 
     # Cap on company codes scanned by list_companies_with_open_ap_ar_balance
-    # below. Company codes are master data (a handful per landscape, not
-    # thousands like suppliers), so this can stay small — it exists to bound
-    # the worst case, not because this tenant is expected to hit it.
-    _COMPANY_CODE_SCAN_CAP = 20
+    # below. Deliberately small: each company code costs up to ~8 nested,
+    # SEQUENTIAL S/4HANA round trips (get_accounts_payable_summary +
+    # get_accounts_receivable_summary, each itself paginated up to 4 pages),
+    # against an on-prem tenant over Cloud Connector. A live 2026-09 incident:
+    # an unscoped run against 50 company codes made 133 S/4HANA calls, took
+    # 107s, and Joule's connector (~60s timeout) errored out to the user
+    # before this backend even replied — even though the backend itself
+    # finished and returned a real answer 47s too late. Raise this only with
+    # a wall-clock budget in mind, not just "more coverage would be nice".
+    _COMPANY_CODE_SCAN_CAP = 8
 
     def list_companies_with_open_ap_ar_balance(self, *, cap: int | None = None) -> dict:
         """The only company-code-agnostic entry point in this module: every
@@ -2996,15 +3002,16 @@ class S4HANAClient:
         figure reported here matches what those tools would say if asked
         about that company code directly.
 
-        Cost scales with the number of company codes on the tenant (each one
-        costs the same two open-items scans get_accounts_payable_summary /
-        get_accounts_receivable_summary already do): keep `cap` modest. Only
-        company codes with at least one open AP or AR item are returned —
-        `companyCodesScanned` says how many were checked either way.
+        Cost scales with the number of company codes scanned (each one costs
+        the same two open-items scans get_accounts_payable_summary /
+        get_accounts_receivable_summary already do, sequentially — see
+        `_COMPANY_CODE_SCAN_CAP`): keep `cap` small. Only company codes with
+        at least one open AP or AR item are returned — `companyCodesScanned`
+        says how many were actually checked either way.
         """
         scan_cap = cap or self._COMPANY_CODE_SCAN_CAP
         try:
-            codes, codes_capped = _paged_fetch(
+            codes, paging_capped = _paged_fetch(
                 lambda skip, top: self._capability_query(
                     "company_code", select=("CompanyCode", "CompanyCodeName"),
                     filt=None, top=top, skip=skip,
@@ -3016,6 +3023,13 @@ class S4HANAClient:
                 "companies": [], "connected": False, "companyCodesScanned": 0,
                 "message": f"Company code lookup is not available on this system: {exc}",
             }
+        # _paged_fetch fetches in fixed pages of 50 regardless of `scan_cap`
+        # (see its docstring) — a cap below 50 does NOT reduce what it
+        # fetches, only how many 50-row pages it takes. Must slice explicitly
+        # or `cap` silently does nothing, which is exactly what caused the
+        # 133-call incident above.
+        codes_capped = paging_capped or len(codes) > scan_cap
+        codes = codes[:scan_cap]
         companies: list[dict] = []
         for row in codes:
             cc = row.get("CompanyCode")

@@ -1441,6 +1441,21 @@ def test_list_companies_with_open_balance_omits_companies_with_none(fake_s4):
     assert out["companies"] == []
 
 
+def test_list_companies_with_open_balance_actually_enforces_the_cap(fake_s4):
+    # Regression for a live incident: _paged_fetch fetches in fixed 50-row
+    # pages regardless of `cap`, so a cap below 50 must be enforced by
+    # slicing — otherwise a "capped" scan silently processes all 50 rows in
+    # the page, multiplying into far more S4HANA calls than intended (an
+    # unscoped call once made 133 calls / took 107s and blew Joule's timeout).
+    fake_s4.routes["/A_CompanyCode"] = {
+        "json": _d([{"CompanyCode": f"{i:04d}", "CompanyCodeName": f"CC {i}"} for i in range(50)])
+    }
+    fake_s4.routes["/A_OperationalAcctgDocItemCube"] = {"json": _d([])}
+    out = S4HANAClient(_settings()).list_companies_with_open_ap_ar_balance(cap=3)
+    assert out["companyCodesScanned"] == 3
+    assert out["companyCodesCapped"] is True
+
+
 def test_list_companies_with_open_balance_not_connected_when_company_code_lookup_fails(fake_s4):
     fake_s4.routes["/A_CompanyCode"] = {"status": 500, "text": "boom"}
     out = S4HANAClient(_settings()).list_companies_with_open_ap_ar_balance()
