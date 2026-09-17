@@ -327,10 +327,18 @@ _BP_SELECT = (
     "BusinessPartnerIsBlocked", "IsMarkedForArchiving", "CreationDate", "LastChangeDate",
 )
 _SUPPLIER_SET = "A_Supplier"
+# "PurchasingIsBlockedForSupplier" and "SupplierIsBlockedForPosting" are
+# confirmed absent from this build's A_Supplier (live logs, 2026-09: both
+# 404 "field not found" and get dropped by _select_get()'s self-healing
+# retry on every single call) — left out of $select entirely rather than
+# requested-then-dropped, since a request-and-drop round trip per field adds
+# ~200-250ms latency to every vendor lookup for no benefit (they never come
+# back on this tenant either way). count_blocked_vendors's own $filter still
+# names "PurchasingIsBlockedForSupplier" separately — that's a different,
+# unrelated query, not touched by this list.
 _SUPPLIER_SELECT = (
     "Supplier", "SupplierName", "SupplierAccountGroup", "CreationDate",
-    "PurchasingIsBlockedForSupplier", "PostingIsBlocked", "DeletionIndicator",
-    "IsNaturalPerson", "SupplierIsBlockedForPosting",
+    "PostingIsBlocked", "DeletionIndicator", "IsNaturalPerson",
 )
 # BP address -> email address. Same service; used only by
 # get_vendor_email_addresses(), which is a DELIBERATE, narrow exception to the
