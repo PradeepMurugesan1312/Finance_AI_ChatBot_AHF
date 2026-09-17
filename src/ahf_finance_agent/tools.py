@@ -685,7 +685,15 @@ TOOL_SPECS: list[dict] = [
         "capped note so the user knows this is a sample, not a complete list. A "
         "company code not in the result either has no open items or this "
         "tenant's AR field support is unconfirmed for it — relay the note "
-        "verbatim rather than asserting a confirmed zero for AR.",
+        "verbatim rather than asserting a confirmed zero for AR. Do NOT "
+        "follow this up by calling get_accounts_payable_summary / "
+        "get_accounts_receivable_summary again for a company code already "
+        "in this result — apOpenItemCount/apNetOpenAmount/arOpenItemCount/"
+        "arNetOpenAmount here ARE that exact figure, already computed; "
+        "re-calling those tools per company only adds latency for no new "
+        "data (each is several more sequential S/4HANA round trips, and "
+        "this whole answer is already time-boxed against the caller's own "
+        "timeout).",
         {},
         [],
     ),
