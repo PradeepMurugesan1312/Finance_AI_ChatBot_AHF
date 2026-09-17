@@ -8,11 +8,11 @@ metadata:
   description: >
     Answers routine AHF finance questions — supplier invoice / payment / PO /
     purchase-requisition status, 3-way match, vendor / bank details, company
-    code / cost centre / profit centre / G/L account data, portfolio-level AP
-    and AR summaries (amount owed / owed-to-us), and budget status — from SAP
-    S/4HANA (read-only), plus AP, AR, procurement, tax, and finance policy
-    questions grounded in approved documents. Also answers general-knowledge
-    questions. Escalates to a human when not confident.
+    code / cost centre / profit centre / G/L account data, AP/AR summaries per
+    company code OR which companies have an open AP/AR balance, and budget
+    status — from SAP S/4HANA (read-only), plus AP, AR, procurement, tax, and
+    finance policy questions grounded in approved documents. Also answers
+    general-knowledge questions. Escalates to a human when not confident.
 
 system_aliases:
   # Joule → agent. Maps to the BTP destination that points at the deployed

@@ -4,14 +4,14 @@ description: >
   wants recent invoices for a vendor; asks if a vendor is set up, or for a
   contact email or bank/IBAN details; asks if an invoice passed 3-way match;
   asks about a company code, cost centre, profit centre, or G/L account
-  (master data, who owns it, is it valid, balance/activity, or budget status);
-  asks a PORTFOLIO-level AP or AR question (how much is owed / outstanding,
-  total payables or receivables, open item count) rather than one invoice; or
-  asks an accounts-payable, accounts-receivable, procurement, tax, or finance
-  policy question (approval thresholds, onboarding, payment terms, match
-  tolerances, dunning/collections, tax codes). Examples: "Status of invoice
-  5105601234?", "PO approval threshold?", "Balance on G/L 400000 for CC 1710?",
-  "Total AP for CC 1710?", "How much are we owed in AR?", "Tax code for a
+  (master data, balance/activity, or budget status); asks a PORTFOLIO-level AP
+  or AR question for ONE company code (amount owed, open item count), OR asks
+  WHICH companies / all company codes currently have an open AP or AR balance
+  (no company code named — a cross-company list); or asks an accounts-payable,
+  accounts-receivable, procurement, tax, or finance policy question (approval
+  thresholds, onboarding, payment terms, match tolerances, dunning/collections,
+  tax codes). Examples: "Status of invoice 5105601234?", "Total AP for CC
+  1710?", "Which companies have an open AP or AR balance?", "Tax code for a
   domestic purchase?"
 
 target:
