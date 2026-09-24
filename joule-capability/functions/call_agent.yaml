@@ -11,16 +11,20 @@ action_groups:
       - type: status-update
         message: <? "Checking AHF finance systems and policy documents..." ?>
 
+      # A2A task/context threading. The earlier version returned `null` on the
+      # first turn (before contextId/taskId exist), which failed the whole
+      # dialog function in ~0.5s (JCore-4004). Fixed: emit an empty JSON object
+      # '{}' on turn 1, the real ids on every turn after. This is what makes a
+      # Joule follow-up ("give me 10 more", "is it blocked?") continue the same
+      # A2A task so the agent has the prior turns.
       - type: agent-request
         agent_type: remote
         system_alias: FinanceChatBotAgent
-        # First turn: send null. Continuation turns: pass the prior
-        # contextId/taskId back as JSON so the agent resumes the same A2A task.
-        body: >
-          <? (contextId == null || contextId.isEmpty()) && (taskId == null || taskId.isEmpty())
-             ? null
-             : '{"contextId": "' + contextId + '", "taskId": "' + taskId + '"}' ?>
         result_variable: result
+        body: >
+          <? contextId == null || taskId == null
+             ? '{}'
+             : '{"contextId":"' + contextId + '","taskId":"' + taskId + '"}' ?>
 
       - type: set-variables
         variables:

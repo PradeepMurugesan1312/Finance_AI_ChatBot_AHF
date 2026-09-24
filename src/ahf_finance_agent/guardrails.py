@@ -5,10 +5,17 @@ layers defend that:
 
 1. Field-level — the S/4HANA ``$select`` lists (build step 3) never request a
    sensitive field, and :func:`strip_sensitive_keys` drops any that appear in
-   a tool result anyway.
+   a tool result anyway. Two narrow, explicitly-approved exceptions:
+   ``S4HANAClient.get_vendor_email_addresses`` (email) and
+   ``get_vendor_bank_accounts`` (IBAN / bank account / SWIFT — the
+   payment-redirection-fraud-risk category) deliberately do not run that
+   strip — see each method's docstring.
 2. Text-level — :func:`scrub_response` runs over the final answer string just
-   before it goes back to Joule, redacting anything that still looks like an
-   IBAN, bank account, card number, SSN/tax id, or email.
+   before it goes back to Joule, redacting anything that still looks like a
+   card number or SSN/tax id. It does NOT redact email addresses or IBAN/bank
+   account patterns (both removed 2026-09, in step with the field-level
+   exceptions above — blanket-redacting either would have silently broken
+   those two tools' answers).
 
 :func:`scrub_response` is conservative about false positives — redacting a
 legitimate invoice number would be worse than the rare redaction of an
@@ -21,15 +28,15 @@ import re
 
 REDACTION = "[redacted]"
 
-_IBAN = re.compile(r"\b[A-Z]{2}\d{2}(?:[ ]?[A-Z0-9]{4}){2,7}[ ]?[A-Z0-9]{1,4}\b")
 _CARD = re.compile(r"\b(?:\d[ -]?){13,19}\b")
 _SSN = re.compile(r"\b\d{3}-\d{2}-\d{4}\b")
-_BANK_NEAR_KEYWORD = re.compile(
-    r"(?i)\b(?:bank\s*acct|bank\s*account|account\s*(?:no|number|#)|routing|sort\s*code|swift|bic|iban)\b"
-    r"[^\n:]{0,20}[:#]?\s*([A-Z0-9][A-Z0-9 -]{6,34}[A-Z0-9])"
-)
-_EMAIL = re.compile(r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b")
-
+# NOTE: s4hana.S4HANAClient.get_vendor_email_addresses() (email) and
+# get_vendor_bank_accounts() (IBAN / bank account / SWIFT) are two deliberate,
+# narrow, explicitly-approved exceptions that do NOT run strip_sensitive_keys
+# on their respective fields (see each method's docstring). Every other
+# lookup in this codebase still has all of these fields blocked via this set
+# — don't add further exceptions without the same kind of explicit,
+# risk-accepted product sign-off.
 SENSITIVE_KEYS = frozenset(
     k.lower()
     for k in (
@@ -84,11 +91,13 @@ def scrub_response(text: str) -> tuple[str, list[str]]:
 
         out = pattern.sub(_repl, out)
 
-    _sub(_IBAN, "iban")
-    _sub(_BANK_NEAR_KEYWORD, "bank-account", group=1)
     _sub(_SSN, "ssn-or-tax-id")
     _sub(_CARD, "card-number")
-    _sub(_EMAIL, "email-address")
+    # No email or IBAN/bank-account redaction here (deliberately, 2026-09):
+    # get_vendor_email_addresses and get_vendor_bank_accounts are now allowed
+    # to surface those fields, and blanket-redacting them in the final text
+    # would silently break those two tools' answers. Field-level blocking
+    # (SENSITIVE_KEYS) still applies to every other lookup in the codebase.
 
     seen: set[str] = set()
     reasons = [r for r in reasons if not (r in seen or seen.add(r))]

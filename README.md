@@ -22,10 +22,12 @@ User prompt in SAP Joule
 └───────────┬──────────────────┘
             │  dest: GENAICORE
             ▼
-   SAP Generative AI Hub / AI Core   —  GPT 5.2 (answers) · text-embedding-3-small (indexing)
+   SAP Generative AI Hub / AI Core   —  GPT 5.2 (answers) · text-embedding-3-small (indexing, optional)
             │
             ▼
-   HANA Cloud vector store   —  embedded knowledge base (approved finance/AP/procurement SOPs)
+   Policy vector index   —  approved finance/AP/procurement SOPs
+     · local JSON index (default, in-repo) — no external store needed
+     · HANA Cloud vector store (KB_BACKEND=hana) — wired stub, production target
 ```
 
 - **A2A server** — Python, `a2a-sdk[http-server]`, Starlette + uvicorn.
@@ -41,8 +43,8 @@ User prompt in SAP Joule
 |---|---|---|
 | 1 | A2A server scaffold: structure, deps, health check, agent card, task lifecycle, sync request handling | ✅ done |
 | 2 | GPT 5.2 via SAP Generative AI Hub (`GENAICORE` destination) | ✅ code done — live call needs a bound `destination` service / `DESTINATION_SERVICE_KEY` |
-| 3 | S/4HANA read-only tools (5 OData services) | ⬜ |
-| 4 | RAG pipeline + HANA Cloud vector store | ⬜ |
+| 3 | S/4HANA read-only tools (procure-to-pay OData services) | ✅ code done — GPT 5.2 tool-calling loop over `S43`: invoice header + line items, payment/clearing (by FI doc or by invoice number), PO status + release/approval + line items + delivery schedule, goods receipts against a PO, computed 3-way match, PR, vendor. Each capability resolves its OData service from a candidate list probed against the tenant (`_SERVICE_CATALOG`). Live call needs the bound `destination` service. Smoke: `GET /diag/s4`, per-capability `GET /diag/s4/catalog` |
+| 4 | RAG pipeline + policy knowledge base | ✅ code done — `search_policy_docs` tool + `local` JSON vector index (default, zero-config). AI Core `text-embedding-3-small` used when `EMBEDDING_DEPLOYMENT_ID` is set, else a local fallback embedding. HANA Cloud vector store is a wired stub (`KB_BACKEND=hana`). Smoke: `GET /diag/kb` |
 | 5 | Async webhook path (60s A2A ceiling) | partial — `pushNotifications` wired |
 | 6 | Escalation confidence bar | ⬜ |
 | 7 | Cloud Foundry deploy | ⬜ |
@@ -50,20 +52,44 @@ User prompt in SAP Joule
 | 9 | Observability | partial — per-turn interaction records emitted |
 | 10 | Tests | ongoing |
 
-Until step 4 lands, the agent replies plainly that it is not yet grounded on
-policy documents and offers escalation — a deliberate interim behaviour.
+Since step 3, the agent answers specific invoice (header + line items, "has it
+been paid") / payment / PO (status + release/approval + line items) /
+goods-receipt / 3-way-match / PR / vendor questions from live read-only S/4HANA
+lookups. Since step 4 it also answers
+**policy / process** questions across the full finance scope — AP, procurement,
+vendor onboarding, general ledger & journal entries, G/L balances, accounts
+receivable, cost & profit centers, fixed assets, bank & cash, tax, and
+cross-module payments — from an indexed corpus of approved documents via the
+`search_policy_docs` tool, citing each fact as `(<title> — <section>)`, and
+hands off to a human when retrieval finds nothing relevant. It holds
+conversation context across turns, so follow-ups ("is it blocked?") work.
+
+The finance domains and which have a **live** S/4HANA lookup vs **policy-only**
+(until their OData service is connected) are tracked in
+`src/ahf_finance_agent/domains.py` and served at `GET /diag/domains`. See
+[`docs/USE_CASE_AND_REQUIREMENTS.md`](docs/USE_CASE_AND_REQUIREMENTS.md) for the
+coverage matrix and the checklist to connect each domain.
+
+> The documents in `knowledge_base/docs/` are **SAMPLE / PLACEHOLDER** content
+> that exercises the pipeline end to end. Replace them with the real approved
+> policy documents before any pilot — the bot quotes and cites them verbatim.
 
 ## Project layout
 
 ```
 src/ahf_finance_agent/
 ├── __main__.py         # server entry point (uvicorn + Starlette); `python -m ahf_finance_agent`
-├── server.py           # build_app(): A2A Starlette app + /health + /ready + /diag/llm
+├── server.py           # build_app(): A2A Starlette app + /health + /ready + /diag/llm + /diag/s4[/catalog]
 ├── agent_card.py       # Agent Card — what Joule discovers at /.well-known/agent.json
 ├── agent_executor.py   # A2A protocol bridge + task lifecycle
-├── answering.py        # AnswerGenerator: question → GPT 5.2 → scrubbed answer + metadata
-├── llm.py              # GenAIHubClient: GPT 5.2 via GENAICORE (openai SDK, max_completion_tokens)
-├── prompts.py          # staged system prompt (interim: not grounded yet)
+├── answering.py        # AnswerGenerator: question → GPT 5.2 (+ S/4HANA tool loop) → scrubbed answer
+├── llm.py              # GenAIHubClient: GPT 5.2 via GENAICORE (openai SDK, tool calling)
+├── s4hana.py           # S4HANAClient: read-only OData v2 GETs via the S43 destination
+├── knowledge_base.py   # RAG retrieval: chunking, embeddings, local/hana vector index
+├── kb_ingest.py        # `python -m ahf_finance_agent.kb_ingest` — build the policy index
+├── domains.py          # finance domain registry — live vs KB-only, served at /diag/domains
+├── tools.py            # OpenAI tool schemas + dispatch: 6 S/4HANA lookups + search_policy_docs
+├── prompts.py          # staged system prompt (step 4: S/4HANA tools + policy KB live)
 ├── guardrails.py       # scrub_response() / strip_sensitive_keys() — no PII / bank data out
 ├── btp/destinations.py # BTP destination resolution (+ CSRF-fallback, on-prem proxy)
 ├── task_store.py       # SQLite-backed A2A task store (threads survive `cf push`)
@@ -71,6 +97,8 @@ src/ahf_finance_agent/
 ├── logging_setup.py    # JSON logs + PII redaction filter
 ├── escalation.py       # human-handoff wording (confidence bar lands in step 6)
 └── observability.py    # one structured record per answered turn
+knowledge_base/docs/    # approved policy .md / .txt — SAMPLE content for now
+docs/USE_CASE_AND_REQUIREMENTS.md   # scope, domain coverage matrix, connection checklist
 tests/                  # pytest — no BTP creds or network needed
 joule-capability/       # SAP Joule BYOA capability (schema 3.28.0) — deployed in step 8
 scripts/create-destination.sh   # creates/updates the AHF_FINANCE_AGENT_DEV destination
@@ -81,8 +109,9 @@ manifest.yml, Procfile, runtime.txt, requirements.txt   # Cloud Foundry deploy
 
 ```bash
 uv sync
-cp .env.example .env          # edit as needed; fine to leave defaults for step 1
-uv run python -m ahf_finance_agent
+cp .env.example .env          # edit as needed; defaults are fine for local dev
+uv run python -m ahf_finance_agent.kb_ingest   # build the policy vector index
+uv run python -m ahf_finance_agent            # (also builds the index on boot if missing)
 ```
 
 ```bash
@@ -92,6 +121,12 @@ curl -s localhost:8080/.well-known/agent.json | jq .
 # Health / readiness
 curl -s localhost:8080/health
 curl -s localhost:8080/ready | jq .
+
+# Downstream smoke tests (non-prod only): resolve the destination + one live call
+curl -s localhost:8080/diag/llm | jq .
+curl -s localhost:8080/diag/s4  | jq .   # one-row OData GET against S43, no business data
+curl -s localhost:8080/diag/s4/catalog | jq .   # which OData service resolved per capability on this tenant
+curl -s 'localhost:8080/diag/kb?q=what+is+the+PO+approval+threshold' | jq .   # policy retrieval
 
 # A2A message/send round trip
 curl -s localhost:8080/ -H 'content-type: application/json' -d '{

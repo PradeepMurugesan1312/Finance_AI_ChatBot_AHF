@@ -26,3 +26,6 @@ scratchpad/
 
 # Joule CLI compiled capability artifact (produced by `joule deploy --compile`)
 *.daar
+
+# Local scratch: images pasted in for Claude to look at, not part of the repo
+Images for Claude/

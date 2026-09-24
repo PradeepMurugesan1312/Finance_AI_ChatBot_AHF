@@ -54,18 +54,36 @@ class Settings(BaseSettings):
     aicore_resource_group: str = "default"
     aicore_destination_name: str = "GENAICORE"
     # AI Core GPT deployments proxy to Azure OpenAI, which requires an
-    # api-version query param on every request.
-    aicore_api_version: str = "2023-05-15"
+    # api-version query param on every request. Must be >= 2023-12-01-preview
+    # for tool/function calling (see llm.py) — older values 400 with
+    # "Unrecognized request argument: tools".
+    aicore_api_version: str = "2024-10-21"
     # GPT 5.2 is a reasoning-tier model: it rejects the legacy `max_tokens`
     # chat param — the openai client sends `max_completion_tokens`.
     llm_max_completion_tokens: int = 4096
+    # Reasoning-tier models spend hidden "thinking" time proportional to this
+    # (none/minimal/low/medium/high/xhigh/max). Tried "low" for latency
+    # (2026-09): live-measured before/after showed no meaningful speedup, so
+    # there is no latency reason to keep it low — "high" instead, favouring
+    # correct tool selection and guardrail judgement across 43 tools + the
+    # policy KB over the small, unmeasurable time difference. llm.py falls
+    # back to omitting this entirely if a deployment rejects it.
+    llm_reasoning_effort: str | None = "high"
     # Kept well under the 60s synchronous A2A budget (step 5 adds the async
     # webhook path for anything slower).
     llm_timeout_seconds: float = 45.0
 
     # --- S/4HANA connectivity (step 3) ----------------------------------
     s4hana_destination_name: str = "S43"
+    # OData service root, prepended to every service path. Keeps the S43
+    # destination URL as the bare host:port (e.g. http://host:50000) — the
+    # standard SAP Gateway root is /sap/opu/odata/sap. Set
+    # S4HANA_ODATA_BASE_PATH="" if the destination URL already carries it.
+    s4hana_odata_base_path: str = "/sap/opu/odata/sap"
     s4hana_timeout_seconds: float = 20.0
+    # Max GPT 5.2 <-> S/4HANA tool round trips before we force a final answer.
+    # 4 covers "look up A, then look up B it referenced" without runaway loops.
+    s4hana_max_tool_iterations: int = 4
 
     # --- Local dev credentials (never set in CF; services are bound there) --
     destination_service_key: str | None = None
@@ -75,12 +93,24 @@ class Settings(BaseSettings):
     kb_backend: str = "local"  # "local" | "hana"
     kb_index_path: str = "knowledge_base/index.json"
     kb_docs_dir: str = "knowledge_base/docs"
+    # Tuned for the local fallback embedding (approximate). RAISE to ~0.75 once
+    # EMBEDDING_DEPLOYMENT_ID points at a real embedding model. The lexical
+    # overlap guard in knowledge_base.retrieve() still rejects off-topic hits.
     kb_min_score: float = 0.20
     kb_top_k: int = 4
+    # Rebuild the vector index from kb_docs_dir at server startup. Always
+    # rebuilt when the index file is missing; set this to force a rebuild even
+    # when it exists (e.g. after enabling EMBEDDING_DEPLOYMENT_ID on deploy).
+    kb_rebuild_on_start: bool = False
+    # Max characters of a retrieved passage handed back to the model per hit.
+    kb_snippet_chars: int = 700
 
     # --- A2A task persistence (step 5 / step 7) ----------------------
     task_store_path: str | None = None
     emit_working_event: bool = False
+    # How many prior conversation messages (user + agent) to replay into the
+    # model on a follow-up turn, so it answers in context. Newest kept.
+    chat_history_max_messages: int = 10
 
     # --- Observability (step 9) --------------------------------------
     interaction_log_path: str | None = None

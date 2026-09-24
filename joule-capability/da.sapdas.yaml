@@ -1,5 +1,5 @@
 schema_version: 1.4.0
-name: finance_ai_chatbot_a2a
+name: joule_ai_chatbot_finance
 capabilities:
   # The current CLI schema allows ONLY `type` and `folder` here.
   # Do NOT add `name`, `namespace`, or `version` — older examples show them,

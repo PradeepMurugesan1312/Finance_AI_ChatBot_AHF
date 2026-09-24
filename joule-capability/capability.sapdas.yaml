@@ -2,14 +2,17 @@ schema_version: 3.28.0
 
 metadata:
   namespace: joule.ext
-  name: finance_ai_chatbot_a2a
+  name: joule_ai_chatbot_finance
   version: 1.0.0
-  display_name: "AHF Finance ChatBot"
+  display_name: "Joule-Ai-Chatbot-Finance"
   description: >
     Answers routine AHF finance questions — supplier invoice / payment / PO /
-    purchase-requisition status and vendor onboarding status from SAP S/4HANA
-    (read-only), plus AP, procurement, and finance policy questions grounded in
-    approved company documents. Escalates to a human when not confident.
+    purchase-requisition status, 3-way match, vendor / bank details, company
+    code / cost centre / profit centre / G/L account data, AP/AR summaries per
+    company code OR which companies have an open AP/AR balance, and budget
+    status — from SAP S/4HANA (read-only), plus AP, AR, procurement, tax, and
+    finance policy questions grounded in approved documents. Also answers
+    general-knowledge questions. Escalates to a human when not confident.
 
 system_aliases:
   # Joule → agent. Maps to the BTP destination that points at the deployed

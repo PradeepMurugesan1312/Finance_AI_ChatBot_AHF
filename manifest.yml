@@ -22,22 +22,37 @@ applications:
       LLM_DEPLOYMENT_ID: dcc9a836b894dc1d
       AICORE_RESOURCE_GROUP: default
       AICORE_DESTINATION_NAME: GENAICORE
-      AICORE_API_VERSION: "2023-05-15"
+      # AICORE_API_VERSION intentionally unset — the code default
+      # (config.Settings.aicore_api_version) is new enough for tool calling.
       LLM_MAX_COMPLETION_TOKENS: "4096"
-      LLM_TIMEOUT_SECONDS: "45"
+      LLM_TIMEOUT_SECONDS: "60"
 
       # --- step 3: S/4HANA (read-only OData) ------------------------------
       S4HANA_DESTINATION_NAME: S43
+      # S43 destination URL is the bare host:port; the agent prepends this
+      # OData service root. Set to "" if the destination URL already has it.
+      S4HANA_ODATA_BASE_PATH: /sap/opu/odata/sap
       S4HANA_TIMEOUT_SECONDS: "20"
+      S4HANA_MAX_TOOL_ITERATIONS: "4"
+
+      # --- step 4: RAG policy knowledge base ------------------------------
+      KB_BACKEND: local
+      # Rebuild the vector index from knowledge_base/docs/ on every boot, so a
+      # fresh `cf push` always ships a working KB (the index file is
+      # git-ignored). With the local fallback embedding this is ~30 chunks and
+      # sub-second. Set EMBEDDING_DEPLOYMENT_ID to embed via AI Core instead.
+      KB_REBUILD_ON_START: "true"
+      # EMBEDDING_DEPLOYMENT_ID: <text-embedding-3-small deployment id>
 
       # --- step 5 / 7: task persistence (threads survive `cf push`) --------
       TASK_STORE_PATH: /home/vcap/app/data/tasks.db
 
-    # `destination-service` is REQUIRED from step 2 on (resolves GENAICORE and
-    # S43). `connectivity` is only needed if S43 is a ProxyType=OnPremise
-    # destination (Cloud Connector). Create the instances, then uncomment:
-    #   cf create-service destination   lite   destination-service
-    #   cf create-service connectivity  lite   connectivity
-    # services:
-    #   - destination-service
-    #   - connectivity
+    # `destination-service` resolves GENAICORE + S43. `btp-connectivity` is
+    # required because S43 is a ProxyType=OnPremise destination (Cloud
+    # Connector) — the agent needs the on-premise proxy to reach S/4HANA.
+    # Instance names below match what exists in this space (confirmed):
+    #   cf create-service destination   lite  destination-service
+    #   cf create-service connectivity  lite  btp-connectivity
+    services:
+      - destination-service
+      - btp-connectivity
